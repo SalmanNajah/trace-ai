@@ -1,0 +1,26 @@
+req_key,code_key,label,notes
+REQ-001,CODE-001,Implemented,Requirement upload endpoint handles this behavior.
+REQ-002,CODE-002,Implemented,Repository parsing logic is implemented here.
+REQ-003,CODE-003,Partially Implemented,UI displays matrix preview but can be improved.
+REQ-003,CODE-023,Implemented,Trace matrix component renders requirement rows.
+REQ-003,CODE-025,Implemented,Requirement links page shows explainable links.
+REQ-004,CODE-010,Implemented,Trace API returns links with score and explanation.
+REQ-004,CODE-025,Implemented,UI shows score and explanation for each link.
+REQ-005,CODE-005,Implemented,Project creation route exists.
+REQ-005,CODE-027,Implemented,UI action sends create project request.
+REQ-006,CODE-005,Partially Implemented,Validation path exists but needs stricter checks in all flows.
+REQ-007,CODE-007,Implemented,Reindex endpoint exists.
+REQ-007,CODE-028,Implemented,UI action triggers reindex.
+REQ-008,CODE-013,Implemented,Requirement ingestion computes next version.
+REQ-009,CODE-020,Implemented,Embedding store method writes vectors.
+REQ-009,CODE-013,Implemented,Requirement ingest calls embedding storage.
+REQ-009,CODE-014,Implemented,Repository ingest stores code embeddings.
+REQ-010,CODE-016,Implemented,Top-k retrieval is implemented.
+REQ-011,CODE-017,Implemented,Reranking and explanation hint are implemented.
+REQ-011,CODE-015,Implemented,Trace generation applies ranking and filtering.
+REQ-012,CODE-006,Implemented,Project detail includes counts and match percentage.
+REQ-012,CODE-003,Implemented,Project UI displays overall metrics.
+REQ-013,CODE-012,Implemented,Dev reset route exists.
+REQ-013,CODE-004,Missing,Project list route does not enforce dev-only checks.
+REQ-014,CODE-026,Implemented,Stale requirement URL is handled with user message.
+REQ-015,CODE-002,Implemented,Parser skip logic handles noisy files.

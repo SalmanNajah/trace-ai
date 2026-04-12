@@ -1,0 +1,16 @@
+req_key,text,source_doc,version
+REQ-001,The system shall allow users to upload requirement documents.,srs_v1.pdf,1
+REQ-002,The system shall parse repository source code into functions and classes.,srs_v1.pdf,1
+REQ-003,The system shall generate an explainable traceability matrix.,srs_v1.pdf,1
+REQ-004,The system shall show linked code for each requirement with confidence score.,srs_v1.pdf,1
+REQ-005,The system shall create projects with name and optional GitHub URL.,srs_v1.pdf,1
+REQ-006,The system shall reject non GitHub repository URLs.,srs_v1.pdf,1
+REQ-007,The system shall support repository reindex for an existing project.,srs_v1.pdf,1
+REQ-008,The system shall store requirement text versions after each upload.,srs_v1.pdf,1
+REQ-009,The system shall store embeddings for requirements and code units.,srs_v1.pdf,1
+REQ-010,The system shall retrieve top candidates using vector similarity search.,srs_v1.pdf,1
+REQ-011,The system shall rerank retrieved candidates before creating final links.,srs_v1.pdf,1
+REQ-012,The system shall show project level match percentage and counts.,srs_v1.pdf,1
+REQ-013,The system shall provide a safe reset endpoint for local development only.,srs_v1.pdf,1
+REQ-014,The system shall show friendly message for stale requirement URLs.,srs_v1.pdf,1
+REQ-015,The system shall skip noisy files like minified bundles and verification pages.,srs_v1.pdf,1
