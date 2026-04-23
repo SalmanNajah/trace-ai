@@ -1,4 +1,4 @@
-# TraceAI V2
+# TraceAI
 
 Automated requirements-to-code traceability using semantic embeddings, hybrid retrieval, and cross-encoder reranking.
 
