@@ -1,10 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-
-/* ------------------------------------------------------------------ */
-/* Types                                                               */
-/* ------------------------------------------------------------------ */
+import { useEffect, useRef, useState } from "react";
 
 type TraceLink = {
   code_unit_id: string;
@@ -43,28 +39,21 @@ type PipelineStep = "idle" | "resetting" | "uploading" | "ingesting" | "generati
 
 const API = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8100";
 
-/* ------------------------------------------------------------------ */
-/* Main Page                                                           */
-/* ------------------------------------------------------------------ */
-
 export default function Home() {
   const [projectId, setProjectId] = useState("demo-project");
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [repoPath, setRepoPath] = useState("");
 
-  // Pipeline state
   const [step, setStep] = useState<PipelineStep>("idle");
   const [stepMessage, setStepMessage] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
 
-  // Results
   const [traceMatrix, setTraceMatrix] = useState<TraceMatrixResponse | null>(null);
   const [selectedRow, setSelectedRow] = useState<TraceMatrixRow | null>(null);
   const [reqCount, setReqCount] = useState(0);
   const [codeCount, setCodeCount] = useState(0);
   const [linkCount, setLinkCount] = useState(0);
 
-  // Timer
   const [elapsed, setElapsed] = useState(0);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const elapsedRef = useRef(0);
@@ -89,24 +78,22 @@ export default function Home() {
     setTotalTime(elapsedRef.current);
   }
 
-  // Load existing matrix on mount
-  const loadMatrix = useCallback(async () => {
-    try {
-      const res = await fetch(`${API}/api/projects/${projectId}/trace-matrix`);
-      if (res.ok) {
-        const data = await res.json();
-        setTraceMatrix(data as TraceMatrixResponse);
-      }
-    } catch { /* ignore */ }
-  }, [projectId]);
-
   useEffect(() => {
-    loadMatrix();
-  }, [loadMatrix]);
-
-  /* ---------------------------------------------------------------- */
-  /* One-click pipeline                                                */
-  /* ---------------------------------------------------------------- */
+    const controller = new AbortController();
+    async function fetchMatrix() {
+      try {
+        const res = await fetch(`${API}/api/projects/${projectId}/trace-matrix`, {
+          signal: controller.signal,
+        });
+        if (res.ok) {
+          const data = await res.json();
+          setTraceMatrix(data as TraceMatrixResponse);
+        }
+      } catch { /* abort or network error */ }
+    }
+    fetchMatrix();
+    return () => controller.abort();
+  }, [projectId]);
 
   async function runPipeline() {
     if (!uploadFile) {
@@ -124,13 +111,11 @@ export default function Home() {
     startTimer();
 
     try {
-      // Step 1: Reset
       setStep("resetting");
       setStepMessage("Resetting project data…");
       const resetRes = await fetch(`${API}/api/projects/${projectId}/reset`, { method: "POST" });
       if (!resetRes.ok) throw new Error("Reset failed");
 
-      // Step 2: Upload requirements
       setStep("uploading");
       setStepMessage("Uploading & embedding requirements…");
       const body = new FormData();
@@ -146,7 +131,6 @@ export default function Home() {
       const uploadData = await uploadRes.json();
       setReqCount(uploadData.persisted?.inserted_requirements || 0);
 
-      // Step 3: Ingest code
       setStep("ingesting");
       setStepMessage("Parsing repository & embedding code…");
       const ingestRes = await fetch(`${API}/api/projects/${projectId}/repo/ingest`, {
@@ -161,7 +145,6 @@ export default function Home() {
       const ingestData = await ingestRes.json();
       setCodeCount(ingestData.persisted?.inserted_code_units || 0);
 
-      // Step 4: Generate trace links
       setStep("generating");
       setStepMessage("Generating trace links with reranking…");
       const traceRes = await fetch(`${API}/api/projects/${projectId}/trace-links/generate`, {
@@ -176,7 +159,6 @@ export default function Home() {
       const traceData = await traceRes.json();
       setLinkCount(traceData.generated?.links_generated || 0);
 
-      // Step 5: Load results
       const matrixRes = await fetch(`${API}/api/projects/${projectId}/trace-matrix`);
       if (matrixRes.ok) {
         setTraceMatrix(await matrixRes.json());
@@ -195,21 +177,12 @@ export default function Home() {
 
   const isRunning = !["idle", "done", "error"].includes(step);
 
-  /* ---------------------------------------------------------------- */
-  /* Computed stats                                                    */
-  /* ---------------------------------------------------------------- */
-
   const implemented = traceMatrix?.rows.filter((r) => r.best_label === "Implemented").length || 0;
   const partial = traceMatrix?.rows.filter((r) => r.best_label === "Partial").length || 0;
   const missing = traceMatrix?.rows.filter((r) => r.best_label === "Missing").length || 0;
 
-  /* ---------------------------------------------------------------- */
-  /* Render                                                            */
-  /* ---------------------------------------------------------------- */
-
   return (
     <div className="mx-auto flex w-full max-w-6xl flex-1 flex-col gap-8 px-6 py-10">
-      {/* Header */}
       <header className="flex items-center gap-3">
         <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent/10">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-accent">
@@ -228,10 +201,8 @@ export default function Home() {
         </div>
       </header>
 
-      {/* Input Section */}
       <section className="rounded-2xl border border-border-subtle bg-surface p-6">
         <div className="grid gap-6 md:grid-cols-3">
-          {/* Project ID */}
           <FieldLabel label="Project ID">
             <input
               className="w-full rounded-lg border border-border bg-background px-3.5 py-2.5 text-sm text-foreground focus:border-accent focus:ring-1 focus:ring-accent"
@@ -242,7 +213,6 @@ export default function Home() {
             />
           </FieldLabel>
 
-          {/* Requirements Document */}
           <FieldLabel label="Requirements Document">
             <input
               className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground file:mr-3 file:rounded-md file:border-0 file:bg-surface-raised file:px-3 file:py-1 file:text-xs file:font-medium file:text-foreground-muted focus:border-accent focus:ring-1 focus:ring-accent"
@@ -253,7 +223,6 @@ export default function Home() {
             />
           </FieldLabel>
 
-          {/* Repository Path */}
           <FieldLabel label="Code Repository (local path)">
             <input
               className="w-full rounded-lg border border-border bg-background px-3.5 py-2.5 text-sm text-foreground focus:border-accent focus:ring-1 focus:ring-accent"
@@ -265,7 +234,6 @@ export default function Home() {
           </FieldLabel>
         </div>
 
-        {/* Action Button + Status */}
         <div className="mt-6 flex flex-wrap items-center gap-4">
           <button
             className="rounded-xl bg-accent px-8 py-3 text-sm font-semibold text-white shadow-lg shadow-accent/20 transition-all hover:bg-accent-hover hover:shadow-accent/30 disabled:opacity-50 disabled:cursor-not-allowed"
@@ -275,7 +243,6 @@ export default function Home() {
             {isRunning ? "Analyzing…" : "🚀 Analyze Traceability"}
           </button>
 
-          {/* Pipeline progress */}
           {isRunning && (
             <div className="flex items-center gap-3 text-sm">
               <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-accent" />
@@ -303,11 +270,9 @@ export default function Home() {
           )}
         </div>
 
-        {/* Pipeline steps indicator */}
         {isRunning && <PipelineSteps currentStep={step} />}
       </section>
 
-      {/* Stats Cards */}
       {(traceMatrix || step === "done") && (
         <div className="grid gap-4 sm:grid-cols-5 stagger-item">
           <StatCard
@@ -341,7 +306,6 @@ export default function Home() {
         </div>
       )}
 
-      {/* Summary Bar */}
       {traceMatrix && traceMatrix.rows.length > 0 && (
         <div className="flex items-center gap-6 rounded-xl border border-border-subtle bg-surface px-5 py-3 text-xs stagger-item">
           <span className="flex items-center gap-1.5">
@@ -362,7 +326,6 @@ export default function Home() {
         </div>
       )}
 
-      {/* Trace Matrix Table */}
       {traceMatrix && traceMatrix.rows.length > 0 && (
         <section className="rounded-2xl border border-border-subtle bg-surface stagger-item">
           <div className="flex items-center justify-between border-b border-border-subtle px-5 py-3.5">
@@ -379,7 +342,6 @@ export default function Home() {
                   <th className="px-4 py-3">Best Match</th>
                   <th className="px-4 py-3 text-right">Score</th>
                   <th className="px-4 py-3">Status</th>
-                  <th className="px-4 py-3 text-right">Links</th>
                 </tr>
               </thead>
               <tbody>
@@ -413,11 +375,6 @@ export default function Home() {
                     <td className="px-4 py-3">
                       <StatusPill label={row.best_label} />
                     </td>
-                    <td className="px-4 py-3 text-right">
-                      <span className="rounded-full bg-surface-raised px-2 py-0.5 text-xs tabular-nums text-foreground-muted">
-                        {row.links.length}
-                      </span>
-                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -426,22 +383,16 @@ export default function Home() {
         </section>
       )}
 
-      {/* Footer */}
       <footer className="mt-auto border-t border-border-subtle pt-6 pb-4 text-center text-xs text-foreground-subtle">
         TraceAI — Automated Requirements Traceability · Local-first · BGE + Cross-Encoder
       </footer>
 
-      {/* Detail Modal */}
       {selectedRow && (
         <DetailModal row={selectedRow} onClose={() => setSelectedRow(null)} />
       )}
     </div>
   );
 }
-
-/* ------------------------------------------------------------------ */
-/* Pipeline Steps Indicator                                            */
-/* ------------------------------------------------------------------ */
 
 function PipelineSteps({ currentStep }: { currentStep: PipelineStep }) {
   const steps: { key: PipelineStep; label: string }[] = [
@@ -486,10 +437,6 @@ function PipelineSteps({ currentStep }: { currentStep: PipelineStep }) {
   );
 }
 
-/* ------------------------------------------------------------------ */
-/* Detail Modal — requirement + best code match                        */
-/* ------------------------------------------------------------------ */
-
 function DetailModal({ row, onClose }: { row: TraceMatrixRow; onClose: () => void }) {
   const backdropRef = useRef<HTMLDivElement>(null);
 
@@ -519,7 +466,6 @@ function DetailModal({ row, onClose }: { row: TraceMatrixRow; onClose: () => voi
       onClick={(e) => { if (e.target === backdropRef.current) onClose(); }}
     >
       <div className="flex max-h-[90vh] w-full max-w-4xl flex-col rounded-2xl border border-border bg-surface shadow-2xl">
-        {/* Header with close */}
         <div className="flex items-center justify-between border-b border-border-subtle px-6 py-4">
           <div className="flex items-center gap-3">
             <span className="rounded-lg bg-accent/10 px-3 py-1 text-sm font-semibold text-accent">
@@ -536,7 +482,6 @@ function DetailModal({ row, onClose }: { row: TraceMatrixRow; onClose: () => voi
           </button>
         </div>
 
-        {/* Implementation bar */}
         <div className="px-6 py-3 border-b border-border-subtle">
           <div className="flex items-center justify-between text-xs text-foreground-subtle mb-1.5">
             <span>Implementation Confidence</span>
@@ -551,7 +496,6 @@ function DetailModal({ row, onClose }: { row: TraceMatrixRow; onClose: () => voi
         </div>
 
         <div className="flex-1 overflow-auto">
-          {/* Requirement section */}
           <div className="border-b border-border-subtle px-6 py-4">
             <div className="text-[10px] font-medium uppercase tracking-wider text-accent/70 mb-2">
               Requirement
@@ -559,7 +503,6 @@ function DetailModal({ row, onClose }: { row: TraceMatrixRow; onClose: () => voi
             <p className="text-sm leading-relaxed text-foreground">{row.text}</p>
           </div>
 
-          {/* Best matched code */}
           {bestLink ? (
             <div className="px-6 py-4">
               <div className="flex items-center justify-between mb-3">
@@ -584,15 +527,44 @@ function DetailModal({ row, onClose }: { row: TraceMatrixRow; onClose: () => voi
               No matching code found for this requirement.
             </div>
           )}
+
+          {row.links.length > 1 && (
+            <div className="border-t border-border-subtle px-6 py-4">
+              <div className="text-[10px] font-medium uppercase tracking-wider text-foreground-subtle/70 mb-3">
+                All Matched Code ({row.links.length} links)
+              </div>
+              <div className="space-y-1">
+                {row.links.map((link, i) => (
+                  <div
+                    key={link.code_unit_id}
+                    className="flex items-center justify-between rounded-lg px-3 py-2 text-xs transition-colors hover:bg-surface-raised/60"
+                  >
+                    <div className="flex items-center gap-3">
+                      <span className="w-5 text-right tabular-nums text-foreground-subtle">
+                        {i + 1}
+                      </span>
+                      <span className="font-mono text-foreground-muted">
+                        {link.file_path.split("/").pop()}
+                        <span className="text-foreground-subtle">:{link.start_line}</span>
+                      </span>
+                      <span className="text-foreground-subtle">{link.symbol}</span>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <span className="tabular-nums text-foreground-muted">
+                        {link.score.toFixed(3)}
+                      </span>
+                      <StatusPill label={link.label as "Implemented" | "Partial" | "Missing"} />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>
   );
 }
-
-/* ------------------------------------------------------------------ */
-/* Shared Components                                                   */
-/* ------------------------------------------------------------------ */
 
 function StatusPill({ label }: { label: "Implemented" | "Partial" | "Missing" }) {
   const cls =
