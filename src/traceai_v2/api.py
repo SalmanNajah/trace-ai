@@ -12,6 +12,7 @@ from sqlalchemy import select
 from .persistence import (
     build_trace_matrix,
     generate_trace_links,
+    get_all_projects,
     persist_code_units_csv,
     persist_requirements_csv,
     reset_project,
@@ -67,6 +68,26 @@ def health() -> dict[str, str]:
 def ensure_ready() -> None:
     if startup_error:
         raise HTTPException(status_code=503, detail=f"Startup dependency error: {startup_error}")
+
+
+@app.get("/api/projects")
+def list_projects() -> list[dict[str, object]]:
+    ensure_ready()
+    with database.SessionLocal() as session:
+        return get_all_projects(session=session)
+
+
+@app.delete("/api/projects")
+def delete_all_projects() -> dict[str, object]:
+    ensure_ready()
+    with database.SessionLocal() as session:
+        projects = get_all_projects(session=session)
+        count = 0
+        for p in projects:
+            pid = p["project_id"]
+            reset_project(session=session, vector_store=vector_store, project_id=pid)
+            count += 1
+    return {"deleted_projects_count": count}
 
 
 @app.post("/api/projects/{project_id}/requirements/upload")

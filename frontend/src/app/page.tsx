@@ -11,9 +11,14 @@ type TraceLink = {
   explanation: string;
   file_path: string;
   symbol: string;
-  start_line: number;
   end_line: number;
   content: string;
+};
+
+type ProjectInfo = {
+  project_id: string;
+  name: string;
+  last_run: string | null;
 };
 
 type TraceMatrixRow = {
@@ -40,7 +45,10 @@ type PipelineStep = "idle" | "resetting" | "uploading" | "ingesting" | "generati
 const API = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8100";
 
 export default function Home() {
+  const [showApp, setShowApp] = useState(false);
+  const [isViewingHistory, setIsViewingHistory] = useState(false);
   const [projectId, setProjectId] = useState("demo-project");
+  const [allProjects, setAllProjects] = useState<ProjectInfo[]>([]);
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [repoPath, setRepoPath] = useState("");
 
@@ -49,6 +57,7 @@ export default function Home() {
   const [errorMessage, setErrorMessage] = useState("");
 
   const [traceMatrix, setTraceMatrix] = useState<TraceMatrixResponse | null>(null);
+  const [historyMatrix, setHistoryMatrix] = useState<TraceMatrixResponse | null>(null);
   const [selectedRow, setSelectedRow] = useState<TraceMatrixRow | null>(null);
   const [reqCount, setReqCount] = useState(0);
   const [codeCount, setCodeCount] = useState(0);
@@ -78,6 +87,43 @@ export default function Home() {
     setTotalTime(elapsedRef.current);
   }
 
+  async function fetchProjects() {
+    try {
+      const res = await fetch(`${API}/api/projects`);
+      if (res.ok) {
+        setAllProjects(await res.json());
+      }
+    } catch { /* ignore */ }
+  }
+
+  useEffect(() => {
+    fetchProjects();
+  }, []);
+
+  async function handleDeleteProject(pid: string) {
+    if (!confirm(`Are you sure you want to delete the run for "${pid}"?`)) return;
+    try {
+      const res = await fetch(`${API}/api/projects/${pid}/reset`, { method: 'POST' });
+      if (res.ok) {
+        fetchProjects();
+      }
+    } catch (e) {
+      console.error("Failed to delete project", e);
+    }
+  }
+
+  async function handleDeleteAll() {
+    if (!confirm("Are you sure you want to delete ALL historical runs? This cannot be undone.")) return;
+    try {
+      const res = await fetch(`${API}/api/projects`, { method: 'DELETE' });
+      if (res.ok) {
+        setAllProjects([]);
+      }
+    } catch (e) {
+      console.error("Failed to delete all projects", e);
+    }
+  }
+
   useEffect(() => {
     const controller = new AbortController();
     async function fetchMatrix() {
@@ -87,7 +133,9 @@ export default function Home() {
         });
         if (res.ok) {
           const data = await res.json();
-          setTraceMatrix(data as TraceMatrixResponse);
+          setHistoryMatrix(data as TraceMatrixResponse);
+        } else {
+          setHistoryMatrix(null);
         }
       } catch { /* abort or network error */ }
     }
@@ -181,27 +229,74 @@ export default function Home() {
   const partial = traceMatrix?.rows.filter((r) => r.best_label === "Partial").length || 0;
   const missing = traceMatrix?.rows.filter((r) => r.best_label === "Missing").length || 0;
 
+  async function loadProjectHistory(pid: string) {
+    setProjectId(pid);
+    setShowApp(true);
+    setIsViewingHistory(true);
+    setTraceMatrix(null);
+    setStepMessage("Loading project data...");
+    setStep("resetting"); // Just to show some loading state
+    
+    try {
+      const res = await fetch(`${API}/api/projects/${pid}/trace-matrix`);
+      if (res.ok) {
+        const data = await res.json();
+        setTraceMatrix(data as TraceMatrixResponse);
+        setStep("done");
+        setStepMessage("Loaded historical run");
+      } else {
+        setStep("idle");
+        setStepMessage("");
+      }
+    } catch {
+      setStep("idle");
+      setStepMessage("");
+    }
+  }
+
+  if (!showApp) {
+    return (
+      <LandingPage 
+        projects={allProjects} 
+        onStartNew={() => { setShowApp(true); setIsViewingHistory(false); setTraceMatrix(null); setStep("idle"); }} 
+        onLoadProject={loadProjectHistory} 
+        onDeleteProject={handleDeleteProject}
+        onDeleteAll={handleDeleteAll}
+      />
+    );
+  }
+
   return (
     <div className="mx-auto flex w-full max-w-6xl flex-1 flex-col gap-8 px-6 py-10">
-      <header className="flex items-center gap-3">
-        <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent/10">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-accent">
-            <path d="M12 2L2 7l10 5 10-5-10-5Z" />
-            <path d="M2 17l10 5 10-5" />
-            <path d="M2 12l10 5 10-5" />
-          </svg>
+      <header className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent/10">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-accent">
+              <path d="M12 2L2 7l10 5 10-5-10-5Z" />
+              <path d="M2 17l10 5 10-5" />
+              <path d="M2 12l10 5 10-5" />
+            </svg>
+          </div>
+          <div>
+            <h1 className="font-serif text-3xl tracking-tight">
+              Trace<span className="text-accent">AI</span>
+            </h1>
+            <p className="text-xs text-foreground-muted">
+              Automated requirements-to-code traceability
+            </p>
+          </div>
         </div>
-        <div>
-          <h1 className="font-serif text-3xl tracking-tight">
-            Trace<span className="text-accent">AI</span>
-          </h1>
-          <p className="text-xs text-foreground-muted">
-            Automated requirements-to-code traceability
-          </p>
-        </div>
+        <button 
+          onClick={() => { setShowApp(false); setTraceMatrix(null); setIsViewingHistory(false); }}
+          className="flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium text-foreground-muted hover:bg-surface-raised hover:text-foreground transition-all"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
+          Back to Home
+        </button>
       </header>
 
-      <section className="rounded-2xl border border-border-subtle bg-surface p-6">
+      {!isViewingHistory && (
+        <section className="rounded-2xl border border-border-subtle bg-surface p-6">
         <div className="grid gap-6 md:grid-cols-3">
           <FieldLabel label="Project ID">
             <input
@@ -240,7 +335,7 @@ export default function Home() {
             onClick={runPipeline}
             disabled={isRunning}
           >
-            {isRunning ? "Analyzing…" : "🚀 Analyze Traceability"}
+            {isRunning ? "Analyzing…" : "Analyze Traceability"}
           </button>
 
           {isRunning && (
@@ -272,6 +367,7 @@ export default function Home() {
 
         {isRunning && <PipelineSteps currentStep={step} />}
       </section>
+      )}
 
       {(traceMatrix || step === "done") && (
         <div className="grid gap-4 sm:grid-cols-5 stagger-item">
@@ -384,7 +480,7 @@ export default function Home() {
       )}
 
       <footer className="mt-auto border-t border-border-subtle pt-6 pb-4 text-center text-xs text-foreground-subtle">
-        TraceAI — Automated Requirements Traceability · Local-first · BGE + Cross-Encoder
+        &copy; {new Date().getFullYear()} TraceAI. All rights reserved.
       </footer>
 
       {selectedRow && (
@@ -472,7 +568,7 @@ function DetailModal({ row, onClose }: { row: TraceMatrixRow; onClose: () => voi
               {row.req_key}
             </span>
             <StatusPill label={row.best_label} />
-            <span className="text-2xl font-bold tabular-nums">{implPercent}%</span>
+            {/* <span className="text-2xl font-bold tabular-nums">{implPercent}%</span> */}
           </div>
           <button
             className="flex h-8 w-8 items-center justify-center rounded-lg border border-border-subtle text-foreground-muted hover:bg-surface-raised hover:text-foreground"
@@ -519,7 +615,7 @@ function DetailModal({ row, onClose }: { row: TraceMatrixRow; onClose: () => voi
                 </span>
               </div>
               <pre className="overflow-x-auto rounded-xl border border-border-subtle bg-background p-4 font-mono text-xs leading-6 text-foreground-muted">
-                <code>{bestLink.content || "Code content not available."}</code>
+                <SimpleHighlight code={bestLink.content} />
               </pre>
             </div>
           ) : (
@@ -605,4 +701,163 @@ function StatCard({ label, value, highlight, info }: { label: string; value: str
       </div>
     </div>
   );
+}
+
+function LandingPage({ 
+  projects, 
+  onStartNew, 
+  onLoadProject,
+  onDeleteProject,
+  onDeleteAll
+}: { 
+  projects: ProjectInfo[], 
+  onStartNew: () => void, 
+  onLoadProject: (pid: string) => void,
+  onDeleteProject: (pid: string) => void,
+  onDeleteAll: () => void
+}) {
+  // A subtle dotted grid background for visual interest
+  const gridStyle = {
+    backgroundImage: `radial-gradient(var(--color-border) 1px, transparent 1px)`,
+    backgroundSize: '24px 24px',
+    backgroundPosition: '-12px -12px'
+  };
+
+  return (
+    <div className="relative flex min-h-screen flex-col items-center justify-start px-6 py-24 w-full bg-background overflow-hidden">
+      {/* Decorative background grid and gradients */}
+      <div className="absolute inset-0 z-0 opacity-[0.15]" style={gridStyle}></div>
+      <div className="absolute top-[-10%] left-[-10%] w-[50%] h-[50%] rounded-full bg-accent-glow blur-3xl z-0 pointer-events-none"></div>
+      
+      <div className="relative z-10 w-full max-w-5xl flex flex-col items-center text-center animate-fade-in">
+        <div className="mx-auto flex h-24 w-24 items-center justify-center rounded-3xl bg-surface border border-border-subtle shadow-sm mb-10 animate-fade-in-delay-1">
+          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-accent">
+            <path d="M12 2L2 7l10 5 10-5-10-5Z" />
+            <path d="M2 17l10 5 10-5" />
+            <path d="M2 12l10 5 10-5" />
+          </svg>
+        </div>
+        <h1 className="font-serif text-6xl tracking-tight text-foreground sm:text-7xl mb-6 animate-fade-in-delay-2">
+          Trace<span className="text-accent">AI</span>
+        </h1>
+        <p className="mx-auto max-w-2xl text-xl text-foreground-muted mb-12 animate-fade-in-delay-3 leading-relaxed">
+          Intelligent requirements-to-code traceability. Connect your repository, upload your design documents, and establish high-confidence semantic trace links instantly.
+        </p>
+        
+        <div className="flex flex-col sm:flex-row gap-4 mb-24 animate-fade-in-delay-4">
+          <button
+            onClick={onStartNew}
+            className="rounded-full bg-accent px-10 py-4 text-lg font-medium text-white shadow-xl shadow-accent/20 transition-all hover:bg-accent-hover hover:shadow-accent/30 hover:-translate-y-1"
+          >
+            Start New Analysis
+          </button>
+        </div>
+
+        {/* Project History Section */}
+        {projects.length > 0 && (
+          <div className="w-full text-left animate-fade-in-delay-4">
+            <div className="flex items-center justify-between mb-6">
+              <div className="flex items-center gap-4">
+                <h3 className="text-xl font-serif tracking-tight text-foreground">Recent Analyses</h3>
+                <span className="text-sm font-medium text-foreground-muted bg-surface-raised px-3 py-1 rounded-full">{projects.length} runs found</span>
+              </div>
+              <button 
+                onClick={onDeleteAll}
+                className="text-sm font-medium text-error/80 hover:text-error hover:bg-error/10 px-3 py-1.5 rounded-lg transition-colors flex items-center gap-2"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18"></path><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"></path><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path></svg>
+                Clear All
+              </button>
+            </div>
+            
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              {projects.map((p) => {
+                const dateStr = p.last_run ? new Date(p.last_run).toLocaleDateString(undefined, {
+                  month: 'short', day: 'numeric', year: 'numeric'
+                }) : "Unknown Date";
+                
+                return (
+                  <button 
+                    key={p.project_id}
+                    onClick={() => onLoadProject(p.project_id)}
+                    className="relative group flex flex-col items-start rounded-2xl border border-border-subtle bg-surface p-5 text-left transition-all hover:border-accent/40 hover:shadow-md hover:shadow-accent/5 hover:-translate-y-1"
+                  >
+                    <button 
+                      className="absolute top-4 right-4 p-2 text-foreground-muted hover:text-error hover:bg-error/10 rounded-full transition-colors opacity-0 group-hover:opacity-100 z-10"
+                      onClick={(e) => { e.stopPropagation(); onDeleteProject(p.project_id); }}
+                      title="Delete Run"
+                    >
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18"></path><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"></path><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path></svg>
+                    </button>
+                    <div className="flex items-center gap-3 w-full mb-3 pr-8">
+                      <div className="h-8 w-8 rounded-lg bg-accent/10 flex items-center justify-center text-accent group-hover:bg-accent group-hover:text-white transition-colors">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
+                      </div>
+                      <div className="font-semibold text-foreground truncate w-full">{p.name}</div>
+                    </div>
+                    <div className="flex items-center gap-2 text-xs text-foreground-muted mt-auto">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
+                      {dateStr}
+                    </div>
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function SimpleHighlight({ code }: { code: string }) {
+  if (!code) return <span>Code content not available.</span>;
+
+  const rules = [
+    { regex: /^("""[\s\S]*?"""|'''[\s\S]*?''')/, color: 'text-emerald-400' },
+    { regex: /^(".*?"|'.*?'|`.*?`)/, color: 'text-emerald-400' },
+    { regex: /^(#.*|\/\/.*)/, color: 'text-foreground-subtle' },
+    { regex: /^(def|class|return|import|from|if|else|elif|for|while|try|except|with|as|pass|async|await|function|const|let|var|interface|type|export|default|null|true|false|None|True|False)\b/, color: 'text-fuchsia-400' },
+    { regex: /^([a-zA-Z_]\w*)(?=\s*\()/, color: 'text-blue-400' },
+    { regex: /^([A-Z][a-zA-Z0-9_]*)\b/, color: 'text-amber-200' },
+    { regex: /^(\b\d+(\.\d+)?\b)/, color: 'text-amber-400' },
+    { regex: /^(@[a-zA-Z_]\w*)/, color: 'text-fuchsia-300' },
+    { regex: /^([a-zA-Z_]\w*)/, color: 'text-foreground' },
+    { regex: /^(\s+)/, color: '' },
+    { regex: /^(.)/, color: 'text-foreground-muted' },
+  ];
+
+  let html = "";
+  let current = code;
+
+  while (current.length > 0) {
+    let matched = false;
+    for (const rule of rules) {
+      const match = current.match(rule.regex);
+      if (match) {
+        let text = match[0]
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;");
+          
+        if (rule.color) {
+          html += `<span class="${rule.color}">${text}</span>`;
+        } else {
+          html += text;
+        }
+        current = current.slice(match[0].length);
+        matched = true;
+        break;
+      }
+    }
+    if (!matched) {
+      html += current[0]
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+      current = current.slice(1);
+    }
+  }
+
+  return <code dangerouslySetInnerHTML={{ __html: html }} />;
 }

@@ -480,3 +480,22 @@ def _score_to_label(score: float) -> str:
 
 def _parse_dt(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def get_all_projects(*, session: Session) -> list[dict[str, object]]:
+    from sqlalchemy import func
+    stmt = (
+        select(TraceLinkRecord.project_id, func.max(TraceLinkRecord.created_at).label("last_run"))
+        .group_by(TraceLinkRecord.project_id)
+        .order_by(func.max(TraceLinkRecord.created_at).desc())
+    )
+    results = session.execute(stmt).all()
+    
+    projects = []
+    for pid, last_run in results:
+        projects.append({
+            "project_id": pid,
+            "name": pid,  # Use project_id as name for now until Auth/Projects table is added
+            "last_run": last_run.isoformat() if last_run else None,
+        })
+    return projects

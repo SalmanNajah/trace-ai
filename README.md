@@ -80,6 +80,22 @@ Open http://localhost:3000
 | PostgreSQL | localhost:5434 |
 | Qdrant | http://localhost:6333 |
 
+## Inspecting Databases
+
+You can easily inspect the internal database state during or after an analysis run:
+
+**1. Qdrant (Vector Database)**
+- Open [http://localhost:6333/dashboard](http://localhost:6333/dashboard) in your browser.
+- Use the built-in UI to visually inspect all vector collections (`requirements_v2`, `code_units_v2`), raw embeddings, and metadata payloads.
+
+**2. PostgreSQL (Relational Database)**
+- Connect to `localhost:5434` with username `traceai` and password `traceai` (database: `traceai`) using any standard SQL client (DBeaver, TablePlus, DataGrip).
+- Alternatively, connect via terminal:
+  ```bash
+  psql -h localhost -p 5434 -U traceai -d traceai
+  ```
+- Important tables to query: `trace_links_v2`, `requirements_v2`, `code_units_v2`.
+
 ## Project Structure
 
 ```
