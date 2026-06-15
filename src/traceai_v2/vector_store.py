@@ -43,6 +43,20 @@ class VectorStore:
     def delete_code_vectors(self, project_id: str) -> None:
         self._delete_by_project(self.collections.code_units, project_id)
 
+    def delete_code_units_by_file(self, project_id: str, file_path: str) -> None:
+        self.client.delete(
+            collection_name=self.collections.code_units,
+            points_selector=rest.FilterSelector(
+                filter=rest.Filter(
+                    must=[
+                        rest.FieldCondition(key="project_id", match=rest.MatchValue(value=project_id)),
+                        rest.FieldCondition(key="file_path", match=rest.MatchValue(value=file_path)),
+                    ]
+                )
+            ),
+            wait=True,
+        )
+
     def search_code_units(self, *, project_id: str, query_vector: list[float], limit: int) -> list[dict[str, Any]]:
         query_filter = self._project_filter(project_id)
         try:

@@ -9,7 +9,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from .embeddings import embed_batch, embed_text
-from .storage import CodeUnitRecord, RequirementRecord, TraceLinkRecord
+from .storage import CodeUnitRecord, ProjectRecord, RequirementRecord, TraceLinkRecord
 from .vector_store import VectorStore
 
 
@@ -311,7 +311,8 @@ def generate_trace_links(
                 continue
             # Use the original embedding score for labeling (calibrated 0-1)
             # The reranker only changes ordering, not confidence
-            display_score = float(candidate.get("embed_score", candidate["score"]))
+            score_val = candidate.get("embed_score")
+            display_score = float(score_val) if score_val is not None else float(candidate["score"])
             label = _score_to_label(display_score)
             # Only store links with meaningful confidence (Partial or Implemented)
             if label == "Missing":
@@ -372,12 +373,31 @@ def build_trace_matrix(*, session: Session, project_id: str) -> dict[str, object
     for requirement in requirements:
         req_links = links_by_requirement.get(requirement.requirement_id, [])
         req_links_sorted = sorted(req_links, key=lambda item: item.rank)
-        best_score = float(req_links_sorted[0].score) if req_links_sorted else 0.0
+        best_score = req_links_sorted[0].score if req_links_sorted else 0.0
         best_label = req_links_sorted[0].label if req_links_sorted else "Missing"
         if req_links_sorted:
             linked_requirements += 1
         if best_label == "Implemented":
             implemented_requirements += 1
+
+        links_data = []
+        for link in req_links_sorted:
+            cu = code_index.get(link.code_unit_id)
+            links_data.append(
+                {
+                    "code_unit_id": link.code_unit_id,
+                    "code_key": link.code_key,
+                    "score": link.score,
+                    "rank": link.rank,
+                    "label": link.label,
+                    "explanation": link.explanation,
+                    "file_path": cu.file_path if cu else "",
+                    "symbol": cu.symbol if cu else "",
+                    "start_line": cu.start_line if cu else 0,
+                    "end_line": cu.end_line if cu else 0,
+                    "content": cu.content if cu else "",
+                }
+            )
 
         rows.append(
             {
@@ -386,22 +406,7 @@ def build_trace_matrix(*, session: Session, project_id: str) -> dict[str, object
                 "text": requirement.text,
                 "best_label": best_label,
                 "best_score": best_score,
-                "links": [
-                    {
-                        "code_unit_id": link.code_unit_id,
-                        "code_key": link.code_key,
-                        "score": float(link.score),
-                        "rank": link.rank,
-                        "label": link.label,
-                        "explanation": link.explanation,
-                        "file_path": code_index.get(link.code_unit_id).file_path if code_index.get(link.code_unit_id) else "",
-                        "symbol": code_index.get(link.code_unit_id).symbol if code_index.get(link.code_unit_id) else "",
-                        "start_line": code_index.get(link.code_unit_id).start_line if code_index.get(link.code_unit_id) else 0,
-                        "end_line": code_index.get(link.code_unit_id).end_line if code_index.get(link.code_unit_id) else 0,
-                        "content": code_index.get(link.code_unit_id).content if code_index.get(link.code_unit_id) else "",
-                    }
-                    for link in req_links_sorted
-                ],
+                "links": links_data,
             }
         )
 
@@ -445,6 +450,7 @@ def reset_project(*, session: Session, vector_store: VectorStore, project_id: st
     session.execute(delete(TraceLinkRecord).where(TraceLinkRecord.project_id == project_id))
     session.execute(delete(RequirementRecord).where(RequirementRecord.project_id == project_id))
     session.execute(delete(CodeUnitRecord).where(CodeUnitRecord.project_id == project_id))
+    session.execute(delete(ProjectRecord).where(ProjectRecord.project_id == project_id))
     session.commit()
     vector_store.delete_requirement_vectors(project_id)
     vector_store.delete_code_vectors(project_id)
@@ -483,19 +489,195 @@ def _parse_dt(value: str) -> datetime:
 
 
 def get_all_projects(*, session: Session) -> list[dict[str, object]]:
-    from sqlalchemy import func
-    stmt = (
-        select(TraceLinkRecord.project_id, func.max(TraceLinkRecord.created_at).label("last_run"))
-        .group_by(TraceLinkRecord.project_id)
-        .order_by(func.max(TraceLinkRecord.created_at).desc())
+    records = session.scalars(
+        select(ProjectRecord).order_by(ProjectRecord.last_run_at.desc().nullslast(), ProjectRecord.created_at.desc())
+    ).all()
+    return [
+        _project_to_dict(p)
+        for p in records
+    ]
+
+
+def get_project(*, session: Session, project_id: str) -> dict[str, object] | None:
+    record = session.scalars(
+        select(ProjectRecord).where(ProjectRecord.project_id == project_id)
+    ).first()
+    if record is None:
+        return None
+    return _project_to_dict(record)
+
+
+def create_project(
+    *,
+    session: Session,
+    project_id: str,
+    name: str,
+    description: str = "",
+    repo_type: str = "local",
+    repo_path: str | None = None,
+    github_url: str | None = None,
+    branch: str | None = None,
+) -> dict[str, object]:
+    now = datetime.now(timezone.utc)
+    record = ProjectRecord(
+        project_id=project_id,
+        name=name,
+        description=description or None,
+        repo_type=repo_type,
+        repo_path=repo_path,
+        github_url=github_url,
+        branch=branch,
+        created_at=now,
     )
-    results = session.execute(stmt).all()
-    
-    projects = []
-    for pid, last_run in results:
-        projects.append({
-            "project_id": pid,
-            "name": pid,  # Use project_id as name for now until Auth/Projects table is added
-            "last_run": last_run.isoformat() if last_run else None,
-        })
-    return projects
+    session.add(record)
+    session.commit()
+    return _project_to_dict(record)
+
+
+def update_project_counts(
+    *,
+    session: Session,
+    project_id: str,
+    requirements_count: int | None = None,
+    code_units_count: int | None = None,
+    trace_links_count: int | None = None,
+) -> None:
+    record = session.scalars(
+        select(ProjectRecord).where(ProjectRecord.project_id == project_id)
+    ).first()
+    if record is None:
+        return
+    if requirements_count is not None:
+        record.requirements_count = requirements_count
+    if code_units_count is not None:
+        record.code_units_count = code_units_count
+    if trace_links_count is not None:
+        record.trace_links_count = trace_links_count
+        record.last_run_at = datetime.now(timezone.utc)
+    session.commit()
+
+
+def _project_to_dict(p: ProjectRecord) -> dict[str, object]:
+    return {
+        "project_id": p.project_id,
+        "name": p.name,
+        "description": p.description or "",
+        "repo_type": p.repo_type,
+        "repo_path": p.repo_path or "",
+        "github_url": p.github_url or "",
+        "branch": p.branch or "",
+        "last_commit_sha": p.last_commit_sha or "",
+        "requirements_count": p.requirements_count,
+        "code_units_count": p.code_units_count,
+        "trace_links_count": p.trace_links_count,
+        "created_at": p.created_at.isoformat() if p.created_at else None,
+        "last_run": p.last_run_at.isoformat() if p.last_run_at else None,
+    }
+
+
+def sync_changed_files(
+    *,
+    session: Session,
+    vector_store: VectorStore,
+    project_id: str,
+    repo_root: Path,
+    changed_files: list[str],
+    commit_sha: str,
+    vector_size: int,
+    embedding_model: str = "gemini-embedding-001",
+) -> int:
+    from .repo_ingestion import LocalRepoIngestionPipeline
+    import uuid
+
+    repo_pipeline = LocalRepoIngestionPipeline(repo_root.parent)
+    now = datetime.now(timezone.utc)
+    updated_count = 0
+
+    max_key = session.scalars(
+        select(CodeUnitRecord.code_key)
+        .where(CodeUnitRecord.project_id == project_id)
+        .order_by(CodeUnitRecord.id.desc())
+    ).first()
+
+    start_idx = 1
+    if max_key and max_key.startswith("CODE-"):
+        try:
+            start_idx = int(max_key.split("-")[1]) + 1
+        except Exception:
+            pass
+
+    for rel_path_str in changed_files:
+        rel_path = Path(rel_path_str)
+        if repo_pipeline._is_excluded(repo_root / rel_path, repo_root):
+            continue
+
+        extension = rel_path.suffix.lower()
+        language = repo_pipeline.SUPPORTED_EXTENSIONS.get(extension)
+        if language is None:
+            continue
+
+        session.execute(
+            delete(CodeUnitRecord)
+            .where(CodeUnitRecord.project_id == project_id, CodeUnitRecord.file_path == rel_path_str)
+        )
+        vector_store.delete_code_units_by_file(project_id, rel_path_str)
+
+        file_abs_path = repo_root / rel_path
+        if file_abs_path.exists() and file_abs_path.is_file():
+            if (file_abs_path.stat().st_size / (1024 * 1024)) > repo_pipeline.MAX_FILE_SIZE_MB:
+                continue
+
+            try:
+                source = file_abs_path.read_text(encoding="utf-8", errors="ignore")
+                extracted = repo_pipeline._extract_for_file(rel_path_str, language, source)
+            except Exception:
+                continue
+
+            if not extracted:
+                continue
+
+            new_records = []
+            for entry in extracted:
+                record = CodeUnitRecord(
+                    project_id=project_id,
+                    code_unit_id=str(uuid.uuid4()),
+                    code_key=f"CODE-{start_idx:03d}",
+                    file_path=rel_path_str,
+                    symbol=entry["symbol"],
+                    start_line=entry["start_line"],
+                    end_line=entry["end_line"],
+                    language=language,
+                    chunk_type=entry["chunk_type"],
+                    content=entry["content"],
+                    commit_sha=commit_sha,
+                    created_at=now,
+                )
+                session.add(record)
+                new_records.append(record)
+                start_idx += 1
+
+            if new_records:
+                texts = [r.content for r in new_records]
+                vectors = embed_batch(
+                    texts,
+                    vector_size=vector_size,
+                    model=embedding_model,
+                    task_type="RETRIEVAL_DOCUMENT",
+                )
+                for r, vector in zip(new_records, vectors):
+                    vector_store.upsert_code_unit(
+                        code_unit_id=r.code_unit_id,
+                        vector=vector,
+                        payload={
+                            "project_id": r.project_id,
+                            "code_key": r.code_key,
+                            "file_path": r.file_path,
+                            "symbol": r.symbol,
+                            "language": r.language,
+                            "chunk_type": r.chunk_type,
+                        },
+                    )
+                updated_count += len(new_records)
+
+    session.commit()
+    return updated_count

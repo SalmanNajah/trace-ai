@@ -11,6 +11,7 @@ type TraceLink = {
   explanation: string;
   file_path: string;
   symbol: string;
+  start_line: number;
   end_line: number;
   content: string;
 };
@@ -18,6 +19,16 @@ type TraceLink = {
 type ProjectInfo = {
   project_id: string;
   name: string;
+  description: string;
+  repo_type: string;
+  repo_path: string;
+  github_url: string;
+  branch: string;
+  last_commit_sha: string;
+  requirements_count: number;
+  code_units_count: number;
+  trace_links_count: number;
+  created_at: string | null;
   last_run: string | null;
 };
 
@@ -40,14 +51,28 @@ type TraceMatrixResponse = {
   rows: TraceMatrixRow[];
 };
 
+type AnalysisRun = {
+  id: number;
+  project_id: string;
+  commit_sha: string | null;
+  changed_files: string | null;
+  requirements_count: number;
+  code_units_count: number;
+  trace_links_count: number;
+  execution_time_seconds: number;
+  created_at: string;
+};
+
 type PipelineStep = "idle" | "resetting" | "uploading" | "ingesting" | "generating" | "done" | "error";
+
+type AppView = "landing" | "create" | "analysis";
 
 const API = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8100";
 
 export default function Home() {
-  const [showApp, setShowApp] = useState(false);
+  const [view, setView] = useState<AppView>("landing");
+  const [activeProject, setActiveProject] = useState<ProjectInfo | null>(null);
   const [isViewingHistory, setIsViewingHistory] = useState(false);
-  const [projectId, setProjectId] = useState("demo-project");
   const [allProjects, setAllProjects] = useState<ProjectInfo[]>([]);
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [repoPath, setRepoPath] = useState("");
@@ -57,7 +82,6 @@ export default function Home() {
   const [errorMessage, setErrorMessage] = useState("");
 
   const [traceMatrix, setTraceMatrix] = useState<TraceMatrixResponse | null>(null);
-  const [historyMatrix, setHistoryMatrix] = useState<TraceMatrixResponse | null>(null);
   const [selectedRow, setSelectedRow] = useState<TraceMatrixRow | null>(null);
   const [reqCount, setReqCount] = useState(0);
   const [codeCount, setCodeCount] = useState(0);
@@ -67,6 +91,28 @@ export default function Home() {
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const elapsedRef = useRef(0);
   const [totalTime, setTotalTime] = useState<number | null>(null);
+  const [runs, setRuns] = useState<AnalysisRun[]>([]);
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [syncMessage, setSyncMessage] = useState("");
+
+  async function fetchProjectRuns(projectId: string) {
+    try {
+      const res = await fetch(`${API}/api/projects/${projectId}/runs`);
+      if (res.ok) {
+        setRuns(await res.json());
+      }
+    } catch {}
+  }
+
+  useEffect(() => {
+    Promise.resolve().then(() => {
+      if (activeProject) {
+        fetchProjectRuns(activeProject.project_id);
+      } else {
+        setRuns([]);
+      }
+    });
+  }, [activeProject]);
 
   function startTimer() {
     elapsedRef.current = 0;
@@ -97,11 +143,13 @@ export default function Home() {
   }
 
   useEffect(() => {
-    fetchProjects();
+    Promise.resolve().then(() => {
+      fetchProjects();
+    });
   }, []);
 
   async function handleDeleteProject(pid: string) {
-    if (!confirm(`Are you sure you want to delete the run for "${pid}"?`)) return;
+    if (!confirm(`Are you sure you want to delete the project "${pid}"?`)) return;
     try {
       const res = await fetch(`${API}/api/projects/${pid}/reset`, { method: 'POST' });
       if (res.ok) {
@@ -113,7 +161,7 @@ export default function Home() {
   }
 
   async function handleDeleteAll() {
-    if (!confirm("Are you sure you want to delete ALL historical runs? This cannot be undone.")) return;
+    if (!confirm("Are you sure you want to delete ALL projects? This cannot be undone.")) return;
     try {
       const res = await fetch(`${API}/api/projects`, { method: 'DELETE' });
       if (res.ok) {
@@ -124,31 +172,58 @@ export default function Home() {
     }
   }
 
-  useEffect(() => {
-    const controller = new AbortController();
-    async function fetchMatrix() {
-      try {
-        const res = await fetch(`${API}/api/projects/${projectId}/trace-matrix`, {
-          signal: controller.signal,
-        });
-        if (res.ok) {
-          const data = await res.json();
-          setHistoryMatrix(data as TraceMatrixResponse);
-        } else {
-          setHistoryMatrix(null);
+  async function handleSyncProject() {
+    if (!activeProject) return;
+    setIsSyncing(true);
+    setSyncMessage("");
+    setErrorMessage("");
+
+    try {
+      const res = await fetch(`${API}/api/projects/${activeProject.project_id}/sync`, {
+        method: "POST"
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || "Sync failed");
+      }
+      const data = await res.json();
+      if (data.reanalyzed) {
+        const matrixRes = await fetch(`${API}/api/projects/${activeProject.project_id}/trace-matrix`);
+        if (matrixRes.ok) {
+          setTraceMatrix(await matrixRes.json());
         }
-      } catch { /* abort or network error */ }
+
+        const projRes = await fetch(`${API}/api/projects/${activeProject.project_id}`);
+        if (projRes.ok) {
+          setActiveProject(await projRes.json());
+        }
+
+        fetchProjectRuns(activeProject.project_id);
+
+        const filesCount = data.changed_files.length;
+        setSyncMessage(
+          `Synced! ${filesCount} file${filesCount === 1 ? "" : "s"} changed (Commit: ${data.new_commit.slice(0, 7)}).`
+        );
+      } else {
+        setSyncMessage("Already up to date with the latest commit.");
+      }
+    } catch (e) {
+      setErrorMessage((e as Error).message);
+    } finally {
+      setIsSyncing(false);
     }
-    fetchMatrix();
-    return () => controller.abort();
-  }, [projectId]);
+  }
 
   async function runPipeline() {
+    if (!activeProject) return;
+    const projectId = activeProject.project_id;
+    const effectiveRepoPath = repoPath.trim() || activeProject.repo_path;
+
     if (!uploadFile) {
       setErrorMessage("Please select a requirements document.");
       return;
     }
-    if (!repoPath.trim()) {
+    if (activeProject.repo_type === "local" && !effectiveRepoPath) {
       setErrorMessage("Please enter a repository path.");
       return;
     }
@@ -163,6 +238,24 @@ export default function Home() {
       setStepMessage("Resetting project data…");
       const resetRes = await fetch(`${API}/api/projects/${projectId}/reset`, { method: "POST" });
       if (!resetRes.ok) throw new Error("Reset failed");
+
+      // Re-create the project record after reset
+      const recreateRes = await fetch(`${API}/api/projects`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: activeProject.name,
+          description: activeProject.description,
+          repo_type: activeProject.repo_type,
+          repo_path: effectiveRepoPath,
+          github_url: activeProject.github_url,
+          branch: activeProject.branch,
+        }),
+      });
+      if (!recreateRes.ok) {
+        const err = await recreateRes.json().catch(() => ({}));
+        if (recreateRes.status !== 409) throw new Error(err.detail || "Failed to recreate project");
+      }
 
       setStep("uploading");
       setStepMessage("Uploading & embedding requirements…");
@@ -184,7 +277,7 @@ export default function Home() {
       const ingestRes = await fetch(`${API}/api/projects/${projectId}/repo/ingest`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ repo_path: repoPath.trim() }),
+        body: JSON.stringify({ repo_path: effectiveRepoPath }),
       });
       if (!ingestRes.ok) {
         const err = await ingestRes.json().catch(() => ({}));
@@ -215,6 +308,7 @@ export default function Home() {
       stopTimer();
       setStep("done");
       setStepMessage("Analysis complete!");
+      fetchProjects();
     } catch (err) {
       stopTimer();
       setStep("error");
@@ -229,16 +323,17 @@ export default function Home() {
   const partial = traceMatrix?.rows.filter((r) => r.best_label === "Partial").length || 0;
   const missing = traceMatrix?.rows.filter((r) => r.best_label === "Missing").length || 0;
 
-  async function loadProjectHistory(pid: string) {
-    setProjectId(pid);
-    setShowApp(true);
+  async function loadProjectHistory(project: ProjectInfo) {
+    setActiveProject(project);
+    setRepoPath(project.repo_path || "");
+    setView("analysis");
     setIsViewingHistory(true);
     setTraceMatrix(null);
     setStepMessage("Loading project data...");
-    setStep("resetting"); // Just to show some loading state
-    
+    setStep("resetting");
+
     try {
-      const res = await fetch(`${API}/api/projects/${pid}/trace-matrix`);
+      const res = await fetch(`${API}/api/projects/${project.project_id}/trace-matrix`);
       if (res.ok) {
         const data = await res.json();
         setTraceMatrix(data as TraceMatrixResponse);
@@ -254,12 +349,36 @@ export default function Home() {
     }
   }
 
-  if (!showApp) {
+  function handleProjectCreated(project: ProjectInfo) {
+    setActiveProject(project);
+    setRepoPath(project.repo_path || "");
+    setView("analysis");
+    setIsViewingHistory(false);
+    setTraceMatrix(null);
+    setStep("idle");
+    fetchProjects();
+  }
+
+  function goHome() {
+    setView("landing");
+    setTraceMatrix(null);
+    setIsViewingHistory(false);
+    setActiveProject(null);
+    setStep("idle");
+    setErrorMessage("");
+    fetchProjects();
+  }
+
+  if (view === "create") {
+    return <CreateProjectPage onCreated={handleProjectCreated} onCancel={goHome} />;
+  }
+
+  if (view === "landing") {
     return (
-      <LandingPage 
-        projects={allProjects} 
-        onStartNew={() => { setShowApp(true); setIsViewingHistory(false); setTraceMatrix(null); setStep("idle"); }} 
-        onLoadProject={loadProjectHistory} 
+      <LandingPage
+        projects={allProjects}
+        onStartNew={() => setView("create")}
+        onLoadProject={loadProjectHistory}
         onDeleteProject={handleDeleteProject}
         onDeleteAll={handleDeleteAll}
       />
@@ -281,33 +400,48 @@ export default function Home() {
             <h1 className="font-serif text-3xl tracking-tight">
               Trace<span className="text-accent">AI</span>
             </h1>
-            <p className="text-xs text-foreground-muted">
-              Automated requirements-to-code traceability
+            <p className="text-xs text-foreground-muted flex items-center gap-2 mt-0.5">
+              <span>{activeProject?.name || "Automated traceability"}</span>
+              {activeProject?.repo_type === "github" && (
+                <span className="inline-flex items-center gap-1 rounded bg-accent/10 px-1.5 py-0.5 text-[10px] font-medium text-accent">
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.3 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61-.546-1.385-1.335-1.755-1.335-1.755-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.605-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 21.795 24 17.295 24 12c0-6.63-5.37-12-12-12"/></svg>
+                  GitHub
+                </span>
+              )}
+              {activeProject?.last_commit_sha && (
+                <span className="inline-flex items-center gap-1 rounded bg-surface-raised px-1.5 py-0.5 text-[10px] font-mono text-foreground-subtle">
+                  commit: {activeProject.last_commit_sha.slice(0, 7)}
+                </span>
+              )}
             </p>
           </div>
         </div>
-        <button 
-          onClick={() => { setShowApp(false); setTraceMatrix(null); setIsViewingHistory(false); }}
-          className="flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium text-foreground-muted hover:bg-surface-raised hover:text-foreground transition-all"
-        >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
-          Back to Home
-        </button>
+        <div className="flex items-center gap-2">
+          {activeProject?.repo_type === "github" && (traceMatrix || step === "done") && (
+            <button
+              onClick={handleSyncProject}
+              disabled={isSyncing}
+              className="flex items-center gap-2 rounded-lg border border-accent/30 bg-accent/10 px-4 py-2 text-sm font-medium text-accent hover:bg-accent/20 transition-all disabled:opacity-50"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={isSyncing ? "animate-spin" : ""}>
+                <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/>
+              </svg>
+              {isSyncing ? "Syncing..." : "Sync Latest"}
+            </button>
+          )}
+          <button
+            onClick={goHome}
+            className="flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium text-foreground-muted hover:bg-surface-raised hover:text-foreground transition-all"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
+            Back to Home
+          </button>
+        </div>
       </header>
 
       {!isViewingHistory && (
         <section className="rounded-2xl border border-border-subtle bg-surface p-6">
-        <div className="grid gap-6 md:grid-cols-3">
-          <FieldLabel label="Project ID">
-            <input
-              className="w-full rounded-lg border border-border bg-background px-3.5 py-2.5 text-sm text-foreground focus:border-accent focus:ring-1 focus:ring-accent"
-              value={projectId}
-              onChange={(e) => setProjectId(e.target.value)}
-              placeholder="my-project"
-              disabled={isRunning}
-            />
-          </FieldLabel>
-
+        <div className="grid gap-6 md:grid-cols-2">
           <FieldLabel label="Requirements Document">
             <input
               className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground file:mr-3 file:rounded-md file:border-0 file:bg-surface-raised file:px-3 file:py-1 file:text-xs file:font-medium file:text-foreground-muted focus:border-accent focus:ring-1 focus:ring-accent"
@@ -318,15 +452,23 @@ export default function Home() {
             />
           </FieldLabel>
 
-          <FieldLabel label="Code Repository (local path)">
-            <input
-              className="w-full rounded-lg border border-border bg-background px-3.5 py-2.5 text-sm text-foreground focus:border-accent focus:ring-1 focus:ring-accent"
-              value={repoPath}
-              onChange={(e) => setRepoPath(e.target.value)}
-              placeholder="/path/to/repository"
-              disabled={isRunning}
-            />
-          </FieldLabel>
+          {activeProject?.repo_type === "github" ? (
+            <FieldLabel label="Code Repository (GitHub)">
+              <div className="flex h-10 items-center rounded-lg border border-border bg-surface-raised px-3.5 py-2.5 text-sm text-foreground-muted font-mono select-none">
+                {activeProject.github_url} ({activeProject.branch})
+              </div>
+            </FieldLabel>
+          ) : (
+            <FieldLabel label="Code Repository (local path)">
+              <input
+                className="w-full rounded-lg border border-border bg-background px-3.5 py-2.5 text-sm text-foreground focus:border-accent focus:ring-1 focus:ring-accent"
+                value={repoPath}
+                onChange={(e) => setRepoPath(e.target.value)}
+                placeholder={activeProject?.repo_path || "/path/to/repository"}
+                disabled={isRunning}
+              />
+            </FieldLabel>
+          )}
         </div>
 
         <div className="mt-6 flex flex-wrap items-center gap-4">
@@ -365,7 +507,7 @@ export default function Home() {
           )}
         </div>
 
-        {isRunning && <PipelineSteps currentStep={step} />}
+        {isRunning && <PipelineSteps currentStep={step} repoType={activeProject?.repo_type} />}
       </section>
       )}
 
@@ -374,30 +516,30 @@ export default function Home() {
           <StatCard
             label="Requirements"
             value={reqCount || traceMatrix?.requirements_total || 0}
-            info="Number of functional requirements extracted from the uploaded document after filtering headers and noise."
+            info="Functional requirements extracted from the uploaded document."
           />
           <StatCard
             label="Code Units"
             value={codeCount}
-            info="Number of code chunks (functions, classes, methods) parsed from the repository using tree-sitter."
+            info="Code chunks (functions, classes, methods) parsed via tree-sitter."
           />
           <StatCard
             label="Trace Links"
             value={linkCount}
-            info={`Total requirement-to-code links generated. Each requirement gets top-10 matches (${reqCount || traceMatrix?.requirements_total || 0} × 10 = ${linkCount}).`}
+            info={`Requirement-to-code links generated (${reqCount || traceMatrix?.requirements_total || 0} × top-10).`}
           />
           <StatCard
             label="Implemented"
             value={traceMatrix ? `${traceMatrix.completion_percentage.toFixed(1)}%` : "–"}
             highlight
-            info="Percentage of requirements with a strong semantic match to code (embedding similarity ≥ 0.50)."
+            info="Requirements with strong semantic match (similarity ≥ 0.50)."
           />
           <StatCard
             label="Avg Score"
             value={traceMatrix && traceMatrix.rows.length > 0
               ? (traceMatrix.rows.reduce((s, r) => s + r.best_score, 0) / traceMatrix.rows.length).toFixed(3)
               : "–"}
-            info="Mean best-match cosine similarity across all requirements. For NL→code matching, 0.50+ is strong, 0.65+ is excellent."
+            info="Mean best-match cosine similarity. 0.50+ is strong, 0.65+ is excellent."
           />
         </div>
       )}
@@ -422,8 +564,17 @@ export default function Home() {
         </div>
       )}
 
+      {syncMessage && (
+        <div className="flex items-center gap-2 rounded-xl border border-accent/30 bg-accent/5 px-5 py-3 text-xs text-accent stagger-item">
+          <span className="inline-block h-1.5 w-1.5 rounded-full bg-accent animate-pulse" />
+          <span>{syncMessage}</span>
+        </div>
+      )}
+
       {traceMatrix && traceMatrix.rows.length > 0 && (
-        <section className="rounded-2xl border border-border-subtle bg-surface stagger-item">
+        <div className="grid gap-6 lg:grid-cols-4 stagger-item">
+          <div className="lg:col-span-3">
+            <section className="rounded-2xl border border-border-subtle bg-surface h-full">
           <div className="flex items-center justify-between border-b border-border-subtle px-5 py-3.5">
             <h2 className="font-serif text-lg">Traceability Matrix</h2>
             <span className="text-xs text-foreground-subtle">
@@ -476,7 +627,13 @@ export default function Home() {
               </tbody>
             </table>
           </div>
-        </section>
+            </section>
+          </div>
+
+          <div className="lg:col-span-1">
+            <RunHistoryTimeline runs={runs} />
+          </div>
+        </div>
       )}
 
       <footer className="mt-auto border-t border-border-subtle pt-6 pb-4 text-center text-xs text-foreground-subtle">
@@ -490,11 +647,332 @@ export default function Home() {
   );
 }
 
-function PipelineSteps({ currentStep }: { currentStep: PipelineStep }) {
+
+// ---------------------------------------------------------------------------
+// Create Project Page
+// ---------------------------------------------------------------------------
+
+function CreateProjectPage({ onCreated, onCancel }: { onCreated: (p: ProjectInfo) => void; onCancel: () => void }) {
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const [repoType, setRepoType] = useState<"local" | "github">("local");
+  const [repoPath, setRepoPath] = useState("");
+  const [githubUrl, setGithubUrl] = useState("");
+  const [branch, setBranch] = useState("main");
+  const [error, setError] = useState("");
+  const [creating, setCreating] = useState(false);
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!name.trim()) {
+      setError("Project name is required");
+      return;
+    }
+    setError("");
+    setCreating(true);
+
+    try {
+      const res = await fetch(`${API}/api/projects`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: name.trim(),
+          description: description.trim(),
+          repo_type: repoType,
+          repo_path: repoType === "local" ? repoPath.trim() : "",
+          github_url: repoType === "github" ? githubUrl.trim() : "",
+          branch: repoType === "github" ? branch.trim() : "",
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || `Failed to create project: HTTP ${res.status}`);
+      }
+      const project = await res.json();
+      onCreated(project);
+    } catch (err) {
+      setError((err as Error).message);
+      setCreating(false);
+    }
+  }
+
+  const gridStyle = {
+    backgroundImage: `radial-gradient(var(--color-border) 1px, transparent 1px)`,
+    backgroundSize: '24px 24px',
+    backgroundPosition: '-12px -12px'
+  };
+
+  return (
+    <div className="relative flex min-h-screen flex-col items-center justify-start px-6 py-16 w-full bg-background overflow-hidden">
+      <div className="absolute inset-0 z-0 opacity-[0.08]" style={gridStyle}></div>
+      <div className="absolute top-[-10%] left-[-10%] w-[50%] h-[50%] rounded-full bg-accent-glow blur-3xl z-0 pointer-events-none"></div>
+
+      <div className="relative z-10 w-full max-w-xl animate-fade-in">
+        <button
+          onClick={onCancel}
+          className="flex items-center gap-2 mb-8 text-sm font-medium text-foreground-muted hover:text-foreground transition-colors"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
+          Back to Home
+        </button>
+
+        <div className="rounded-2xl border border-border-subtle bg-surface p-8">
+          <div className="flex items-center gap-3 mb-8">
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent/10">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-accent">
+                <path d="M12 5v14M5 12h14" />
+              </svg>
+            </div>
+            <h2 className="font-serif text-2xl tracking-tight">Create New Project</h2>
+          </div>
+
+          <form onSubmit={handleSubmit} className="flex flex-col gap-5">
+            <FieldLabel label="Project Name *">
+              <input
+                className="w-full rounded-lg border border-border bg-background px-3.5 py-2.5 text-sm text-foreground focus:border-accent focus:ring-1 focus:ring-accent"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="My iTrust Analysis"
+                autoFocus
+              />
+            </FieldLabel>
+
+            <FieldLabel label="Description">
+              <textarea
+                className="w-full rounded-lg border border-border bg-background px-3.5 py-2.5 text-sm text-foreground focus:border-accent focus:ring-1 focus:ring-accent resize-none"
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                placeholder="Traceability analysis for the iTrust healthcare system"
+                rows={2}
+              />
+            </FieldLabel>
+
+            <FieldLabel label="Repository Source">
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  className={`flex-1 rounded-lg border px-4 py-2.5 text-sm font-medium transition-all ${
+                    repoType === "local"
+                      ? "border-accent bg-accent/10 text-accent"
+                      : "border-border bg-background text-foreground-muted hover:border-border hover:text-foreground"
+                  }`}
+                  onClick={() => setRepoType("local")}
+                >
+                  📁 Local Path
+                </button>
+                <button
+                  type="button"
+                  className={`flex-1 rounded-lg border px-4 py-2.5 text-sm font-medium transition-all ${
+                    repoType === "github"
+                      ? "border-accent bg-accent/10 text-accent"
+                      : "border-border bg-background text-foreground-muted hover:border-border hover:text-foreground"
+                  }`}
+                  onClick={() => setRepoType("github")}
+                >
+                  <span className="inline-flex items-center gap-1.5">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.3 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61-.546-1.385-1.335-1.755-1.335-1.755-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.605-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 21.795 24 17.295 24 12c0-6.63-5.37-12-12-12"/></svg>
+                    GitHub
+                  </span>
+                </button>
+              </div>
+            </FieldLabel>
+
+            {repoType === "local" && (
+              <FieldLabel label="Repository Path">
+                <input
+                  className="w-full rounded-lg border border-border bg-background px-3.5 py-2.5 text-sm text-foreground font-mono focus:border-accent focus:ring-1 focus:ring-accent"
+                  value={repoPath}
+                  onChange={(e) => setRepoPath(e.target.value)}
+                  placeholder="/Users/you/projects/my-repo"
+                />
+              </FieldLabel>
+            )}
+
+            {repoType === "github" && (
+              <>
+                <FieldLabel label="GitHub URL">
+                  <input
+                    className="w-full rounded-lg border border-border bg-background px-3.5 py-2.5 text-sm text-foreground font-mono focus:border-accent focus:ring-1 focus:ring-accent"
+                    value={githubUrl}
+                    onChange={(e) => setGithubUrl(e.target.value)}
+                    placeholder="https://github.com/owner/repo"
+                  />
+                </FieldLabel>
+                <FieldLabel label="Branch">
+                  <input
+                    className="w-full rounded-lg border border-border bg-background px-3.5 py-2.5 text-sm text-foreground focus:border-accent focus:ring-1 focus:ring-accent"
+                    value={branch}
+                    onChange={(e) => setBranch(e.target.value)}
+                    placeholder="main"
+                  />
+                </FieldLabel>
+              </>
+            )}
+
+            {error && (
+              <div className="text-sm text-error">{error}</div>
+            )}
+
+            <button
+              type="submit"
+              disabled={creating}
+              className="mt-2 rounded-xl bg-accent px-8 py-3 text-sm font-semibold text-white shadow-lg shadow-accent/20 transition-all hover:bg-accent-hover hover:shadow-accent/30 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {creating ? "Creating…" : "Create & Start Analysis"}
+            </button>
+          </form>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+// ---------------------------------------------------------------------------
+// Landing Page
+// ---------------------------------------------------------------------------
+
+function LandingPage({
+  projects,
+  onStartNew,
+  onLoadProject,
+  onDeleteProject,
+  onDeleteAll
+}: {
+  projects: ProjectInfo[],
+  onStartNew: () => void,
+  onLoadProject: (p: ProjectInfo) => void,
+  onDeleteProject: (pid: string) => void,
+  onDeleteAll: () => void
+}) {
+  const gridStyle = {
+    backgroundImage: `radial-gradient(var(--color-border) 1px, transparent 1px)`,
+    backgroundSize: '24px 24px',
+    backgroundPosition: '-12px -12px'
+  };
+
+  return (
+    <div className="relative flex min-h-screen flex-col items-center justify-start px-6 py-24 w-full bg-background overflow-hidden">
+      <div className="absolute inset-0 z-0 opacity-[0.15]" style={gridStyle}></div>
+      <div className="absolute top-[-10%] left-[-10%] w-[50%] h-[50%] rounded-full bg-accent-glow blur-3xl z-0 pointer-events-none"></div>
+
+      <div className="relative z-10 w-full max-w-5xl flex flex-col items-center text-center animate-fade-in">
+        <div className="mx-auto flex h-24 w-24 items-center justify-center rounded-3xl bg-surface border border-border-subtle shadow-sm mb-10 animate-fade-in-delay-1">
+          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-accent">
+            <path d="M12 2L2 7l10 5 10-5-10-5Z" />
+            <path d="M2 17l10 5 10-5" />
+            <path d="M2 12l10 5 10-5" />
+          </svg>
+        </div>
+        <h1 className="font-serif text-6xl tracking-tight text-foreground sm:text-7xl mb-6 animate-fade-in-delay-2">
+          Trace<span className="text-accent">AI</span>
+        </h1>
+        <p className="mx-auto max-w-2xl text-xl text-foreground-muted mb-12 animate-fade-in-delay-3 leading-relaxed">
+          Intelligent requirements-to-code traceability. Connect your repository, upload your design documents, and establish high-confidence semantic trace links instantly.
+        </p>
+
+        <div className="flex flex-col sm:flex-row gap-4 mb-24 animate-fade-in-delay-4">
+          <button
+            onClick={onStartNew}
+            className="rounded-full bg-accent px-10 py-4 text-lg font-medium text-white shadow-xl shadow-accent/20 transition-all hover:bg-accent-hover hover:shadow-accent/30 hover:-translate-y-1"
+          >
+            Start New Analysis
+          </button>
+        </div>
+
+        {projects.length > 0 && (
+          <div className="w-full text-left animate-fade-in-delay-4">
+            <div className="flex items-center justify-between mb-6">
+              <div className="flex items-center gap-4">
+                <h3 className="text-xl font-serif tracking-tight text-foreground">Recent Analyses</h3>
+                <span className="text-sm font-medium text-foreground-muted bg-surface-raised px-3 py-1 rounded-full">{projects.length} projects</span>
+              </div>
+              <button
+                onClick={onDeleteAll}
+                className="text-sm font-medium text-error/80 hover:text-error hover:bg-error/10 px-3 py-1.5 rounded-lg transition-colors flex items-center gap-2"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18"></path><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"></path><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path></svg>
+                Clear All
+              </button>
+            </div>
+
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              {projects.map((p) => {
+                const dateStr = p.last_run ? new Date(p.last_run).toLocaleDateString(undefined, {
+                  month: 'short', day: 'numeric', year: 'numeric'
+                }) : p.created_at ? new Date(p.created_at).toLocaleDateString(undefined, {
+                  month: 'short', day: 'numeric', year: 'numeric'
+                }) : "No runs yet";
+
+                return (
+                  <div
+                    key={p.project_id}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => onLoadProject(p)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        onLoadProject(p);
+                      }
+                    }}
+                    className="relative group flex flex-col items-start rounded-2xl border border-border-subtle bg-surface p-5 text-left transition-all hover:border-accent/40 hover:shadow-md hover:shadow-accent/5 hover:-translate-y-1 cursor-pointer"
+                  >
+                    <button
+                      className="absolute top-4 right-4 p-2 text-foreground-muted hover:text-error hover:bg-error/10 rounded-full transition-colors opacity-0 group-hover:opacity-100 z-10"
+                      onClick={(e) => { e.stopPropagation(); onDeleteProject(p.project_id); }}
+                      title="Delete Project"
+                    >
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18"></path><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"></path><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path></svg>
+                    </button>
+                    <div className="flex items-center gap-3 w-full mb-2 pr-8">
+                      <div className="h-8 w-8 rounded-lg bg-accent/10 flex items-center justify-center text-accent group-hover:bg-accent group-hover:text-white transition-colors shrink-0">
+                        {p.repo_type === "github" ? (
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.3 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61-.546-1.385-1.335-1.755-1.335-1.755-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.605-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 21.795 24 17.295 24 12c0-6.63-5.37-12-12-12"/></svg>
+                        ) : (
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
+                        )}
+                      </div>
+                      <div className="min-w-0">
+                        <div className="font-semibold text-foreground truncate">{p.name}</div>
+                        {p.description && (
+                          <div className="text-xs text-foreground-muted truncate mt-0.5">{p.description}</div>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-3 text-xs text-foreground-muted mt-auto pt-3 border-t border-border-subtle/50 w-full">
+                      <span className="flex items-center gap-1">
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
+                        {dateStr}
+                      </span>
+                      {p.requirements_count > 0 && (
+                        <span>{p.requirements_count} reqs</span>
+                      )}
+                      {p.trace_links_count > 0 && (
+                        <span>{p.trace_links_count} links</span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+
+// ---------------------------------------------------------------------------
+// Shared Components
+// ---------------------------------------------------------------------------
+
+function PipelineSteps({ currentStep, repoType }: { currentStep: PipelineStep; repoType?: string }) {
   const steps: { key: PipelineStep; label: string }[] = [
     { key: "resetting", label: "Reset" },
     { key: "uploading", label: "Requirements" },
-    { key: "ingesting", label: "Code Analysis" },
+    { key: "ingesting", label: repoType === "github" ? "Clone & Analyze" : "Code Analysis" },
     { key: "generating", label: "Trace Links" },
   ];
 
@@ -568,7 +1046,6 @@ function DetailModal({ row, onClose }: { row: TraceMatrixRow; onClose: () => voi
               {row.req_key}
             </span>
             <StatusPill label={row.best_label} />
-            {/* <span className="text-2xl font-bold tabular-nums">{implPercent}%</span> */}
           </div>
           <button
             className="flex h-8 w-8 items-center justify-center rounded-lg border border-border-subtle text-foreground-muted hover:bg-surface-raised hover:text-foreground"
@@ -703,113 +1180,6 @@ function StatCard({ label, value, highlight, info }: { label: string; value: str
   );
 }
 
-function LandingPage({ 
-  projects, 
-  onStartNew, 
-  onLoadProject,
-  onDeleteProject,
-  onDeleteAll
-}: { 
-  projects: ProjectInfo[], 
-  onStartNew: () => void, 
-  onLoadProject: (pid: string) => void,
-  onDeleteProject: (pid: string) => void,
-  onDeleteAll: () => void
-}) {
-  // A subtle dotted grid background for visual interest
-  const gridStyle = {
-    backgroundImage: `radial-gradient(var(--color-border) 1px, transparent 1px)`,
-    backgroundSize: '24px 24px',
-    backgroundPosition: '-12px -12px'
-  };
-
-  return (
-    <div className="relative flex min-h-screen flex-col items-center justify-start px-6 py-24 w-full bg-background overflow-hidden">
-      {/* Decorative background grid and gradients */}
-      <div className="absolute inset-0 z-0 opacity-[0.15]" style={gridStyle}></div>
-      <div className="absolute top-[-10%] left-[-10%] w-[50%] h-[50%] rounded-full bg-accent-glow blur-3xl z-0 pointer-events-none"></div>
-      
-      <div className="relative z-10 w-full max-w-5xl flex flex-col items-center text-center animate-fade-in">
-        <div className="mx-auto flex h-24 w-24 items-center justify-center rounded-3xl bg-surface border border-border-subtle shadow-sm mb-10 animate-fade-in-delay-1">
-          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-accent">
-            <path d="M12 2L2 7l10 5 10-5-10-5Z" />
-            <path d="M2 17l10 5 10-5" />
-            <path d="M2 12l10 5 10-5" />
-          </svg>
-        </div>
-        <h1 className="font-serif text-6xl tracking-tight text-foreground sm:text-7xl mb-6 animate-fade-in-delay-2">
-          Trace<span className="text-accent">AI</span>
-        </h1>
-        <p className="mx-auto max-w-2xl text-xl text-foreground-muted mb-12 animate-fade-in-delay-3 leading-relaxed">
-          Intelligent requirements-to-code traceability. Connect your repository, upload your design documents, and establish high-confidence semantic trace links instantly.
-        </p>
-        
-        <div className="flex flex-col sm:flex-row gap-4 mb-24 animate-fade-in-delay-4">
-          <button
-            onClick={onStartNew}
-            className="rounded-full bg-accent px-10 py-4 text-lg font-medium text-white shadow-xl shadow-accent/20 transition-all hover:bg-accent-hover hover:shadow-accent/30 hover:-translate-y-1"
-          >
-            Start New Analysis
-          </button>
-        </div>
-
-        {/* Project History Section */}
-        {projects.length > 0 && (
-          <div className="w-full text-left animate-fade-in-delay-4">
-            <div className="flex items-center justify-between mb-6">
-              <div className="flex items-center gap-4">
-                <h3 className="text-xl font-serif tracking-tight text-foreground">Recent Analyses</h3>
-                <span className="text-sm font-medium text-foreground-muted bg-surface-raised px-3 py-1 rounded-full">{projects.length} runs found</span>
-              </div>
-              <button 
-                onClick={onDeleteAll}
-                className="text-sm font-medium text-error/80 hover:text-error hover:bg-error/10 px-3 py-1.5 rounded-lg transition-colors flex items-center gap-2"
-              >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18"></path><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"></path><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path></svg>
-                Clear All
-              </button>
-            </div>
-            
-            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-              {projects.map((p) => {
-                const dateStr = p.last_run ? new Date(p.last_run).toLocaleDateString(undefined, {
-                  month: 'short', day: 'numeric', year: 'numeric'
-                }) : "Unknown Date";
-                
-                return (
-                  <button 
-                    key={p.project_id}
-                    onClick={() => onLoadProject(p.project_id)}
-                    className="relative group flex flex-col items-start rounded-2xl border border-border-subtle bg-surface p-5 text-left transition-all hover:border-accent/40 hover:shadow-md hover:shadow-accent/5 hover:-translate-y-1"
-                  >
-                    <button 
-                      className="absolute top-4 right-4 p-2 text-foreground-muted hover:text-error hover:bg-error/10 rounded-full transition-colors opacity-0 group-hover:opacity-100 z-10"
-                      onClick={(e) => { e.stopPropagation(); onDeleteProject(p.project_id); }}
-                      title="Delete Run"
-                    >
-                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18"></path><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"></path><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path></svg>
-                    </button>
-                    <div className="flex items-center gap-3 w-full mb-3 pr-8">
-                      <div className="h-8 w-8 rounded-lg bg-accent/10 flex items-center justify-center text-accent group-hover:bg-accent group-hover:text-white transition-colors">
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
-                      </div>
-                      <div className="font-semibold text-foreground truncate w-full">{p.name}</div>
-                    </div>
-                    <div className="flex items-center gap-2 text-xs text-foreground-muted mt-auto">
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
-                      {dateStr}
-                    </div>
-                  </button>
-                )
-              })}
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
 function SimpleHighlight({ code }: { code: string }) {
   if (!code) return <span>Code content not available.</span>;
 
@@ -835,11 +1205,11 @@ function SimpleHighlight({ code }: { code: string }) {
     for (const rule of rules) {
       const match = current.match(rule.regex);
       if (match) {
-        let text = match[0]
+        const text = match[0]
           .replace(/&/g, "&amp;")
           .replace(/</g, "&lt;")
           .replace(/>/g, "&gt;");
-          
+
         if (rule.color) {
           html += `<span class="${rule.color}">${text}</span>`;
         } else {
@@ -860,4 +1230,45 @@ function SimpleHighlight({ code }: { code: string }) {
   }
 
   return <code dangerouslySetInnerHTML={{ __html: html }} />;
+}
+
+function RunHistoryTimeline({ runs }: { runs: AnalysisRun[] }) {
+  return (
+    <section className="rounded-2xl border border-border-subtle bg-surface p-5 h-full">
+      <h3 className="font-serif text-lg mb-4">Run History</h3>
+      {runs.length === 0 ? (
+        <div className="text-xs text-foreground-subtle py-4">No runs recorded yet.</div>
+      ) : (
+        <div className="relative border-l border-border-subtle pl-4 ml-2 space-y-5">
+          {runs.map((r, i) => {
+            const date = new Date(r.created_at).toLocaleDateString(undefined, {
+              month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
+            });
+            const changedFiles = JSON.parse(r.changed_files || "[]");
+
+            return (
+              <div key={r.id} className="relative">
+                <span className={`absolute left-[-21px] top-1.5 h-2 w-2 rounded-full border border-surface ${i === 0 ? "bg-accent" : "bg-foreground-subtle"}`} />
+                <div className="text-xs font-semibold text-foreground">{date}</div>
+                {r.commit_sha && (
+                  <div className="text-[10px] font-mono text-accent mt-0.5">
+                    commit: {r.commit_sha.slice(0, 7)}
+                  </div>
+                )}
+                <div className="text-[10px] text-foreground-muted mt-1 space-y-0.5">
+                  <div>{r.requirements_count} reqs · {r.code_units_count} chunks · {r.trace_links_count} links</div>
+                  {changedFiles.length > 0 && (
+                    <div className="text-foreground-subtle truncate max-w-full" title={changedFiles.join(", ")}>
+                      Modified: {changedFiles.length} file{changedFiles.length === 1 ? "" : "s"}
+                    </div>
+                  )}
+                  <div className="text-foreground-subtle">Duration: {r.execution_time_seconds}s</div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </section>
+  );
 }

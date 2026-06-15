@@ -4,12 +4,32 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import DateTime, Float, Integer, String, Text, UniqueConstraint, create_engine
+from sqlalchemy import DateTime, Float, Engine, Integer, String, Text, UniqueConstraint, create_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 
 class Base(DeclarativeBase):
     pass
+
+
+class ProjectRecord(Base):
+    __tablename__ = "projects_v2"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    project_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(255))
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    repo_type: Mapped[str] = mapped_column(String(32), default="local")
+    repo_path: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True)
+    github_url: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    branch: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    last_commit_sha: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    requirements_count: Mapped[int] = mapped_column(Integer, default=0)
+    code_units_count: Mapped[int] = mapped_column(Integer, default=0)
+    trace_links_count: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    last_run_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
 
 class RequirementRecord(Base):
     __tablename__ = "requirements_v2"
@@ -68,10 +88,24 @@ class TraceLinkRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
 
 
+class AnalysisRunRecord(Base):
+    __tablename__ = "analysis_runs_v2"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    project_id: Mapped[str] = mapped_column(String(64), index=True)
+    commit_sha: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    changed_files: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    requirements_count: Mapped[int] = mapped_column(Integer, default=0)
+    code_units_count: Mapped[int] = mapped_column(Integer, default=0)
+    trace_links_count: Mapped[int] = mapped_column(Integer, default=0)
+    execution_time_seconds: Mapped[float] = mapped_column(Float, default=0.0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+
 @dataclass
 class Database:
-    engine: object
-    SessionLocal: object
+    engine: Engine
+    SessionLocal: sessionmaker
 
 
 def build_database(database_url: str) -> Database:

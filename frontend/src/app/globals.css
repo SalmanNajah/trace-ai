@@ -129,3 +129,15 @@ button:active {
     to { opacity: 1; }
   }
 }
+
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.animate-fade-in { animation: fade-in 500ms var(--ease-out) forwards; }
+.animate-fade-in-delay-1 { animation: fade-in 500ms var(--ease-out) 100ms forwards; opacity: 0; }
+.animate-fade-in-delay-2 { animation: fade-in 500ms var(--ease-out) 200ms forwards; opacity: 0; }
+.animate-fade-in-delay-3 { animation: fade-in 500ms var(--ease-out) 300ms forwards; opacity: 0; }
+.animate-fade-in-delay-4 { animation: fade-in 500ms var(--ease-out) 400ms forwards; opacity: 0; }
+

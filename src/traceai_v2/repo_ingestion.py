@@ -17,7 +17,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, Union
+from typing import Any, Optional, Union
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +46,7 @@ class CodeUnit:
 # Tree-sitter setup (lazy-loaded)
 # ---------------------------------------------------------------------------
 
-_ts_parsers: dict[str, object] = {}
+_ts_parsers: dict[str, Any] = {}
 _ts_available: Optional[bool] = None
 
 
@@ -225,6 +225,11 @@ class LocalRepoIngestionPipeline:
         ".c": "c",
         ".cpp": "cpp",
         ".h": "c",
+        ".rb": "ruby",
+        ".go": "go",
+        ".rs": "rust",
+        ".cs": "csharp",
+        ".php": "php",
     }
     EXCLUDED_DIRS = {
         ".git",
@@ -376,6 +381,11 @@ class LocalRepoIngestionPipeline:
         if language in {"java", "c", "cpp"}:
             return self._extract_java_c_units(relative_path, source, language)
 
+        if language in {"ruby", "go", "rust", "csharp", "php"}:
+            return self._extract_generic_units(relative_path, source, language)
+
+        return [self._file_chunk(relative_path, source, language)]
+
     # --- Fallback extractors (kept for resilience) ---
 
     def _extract_python_units_fallback(self, relative_path: str, source: str) -> list[dict]:
@@ -455,6 +465,53 @@ class LocalRepoIngestionPipeline:
                 start_line = source[: match.start()].count("\n") + 1
                 end_line = min(start_line + 30, len(lines))
                 chunk_type = "class" if "class" in match.group(0) else "method"
+                units.append({
+                    "symbol": symbol,
+                    "start_line": start_line,
+                    "end_line": end_line,
+                    "chunk_type": chunk_type,
+                    "content": self._line_slice(lines, start_line, end_line),
+                })
+        if units:
+            return units
+        return [self._file_chunk(relative_path, source, language)]
+
+    def _extract_generic_units(self, relative_path: str, source: str, language: str) -> list[dict]:
+        """Extract logical blocks like classes, structs, methods, or functions using regular expressions."""
+        lines = source.splitlines()
+        patterns_map = {
+            "ruby": [
+                re.compile(r"^\s*class\s+([A-Za-z0-9_:]+)", re.MULTILINE),
+                re.compile(r"^\s*def\s+([A-Za-z0-9_?!]+)", re.MULTILINE),
+            ],
+            "go": [
+                re.compile(r"^\s*type\s+([A-Za-z0-9_]+)\s+struct", re.MULTILINE),
+                re.compile(r"^\s*func\s+(?:\([^)]+\)\s+)?([A-Za-z0-9_]+)\s*\(", re.MULTILINE),
+            ],
+            "rust": [
+                re.compile(r"^\s*(?:pub\s+)?(?:struct|enum|trait)\s+([A-Za-z0-9_]+)", re.MULTILINE),
+                re.compile(r"^\s*(?:pub\s+)?(?:const\s+)?fn\s+([A-Za-z0-9_]+)", re.MULTILINE),
+            ],
+            "csharp": [
+                re.compile(r"^\s*(?:public|private|internal|protected)?\s*(?:static|readonly)?\s*class\s+([A-Za-z0-9_]+)", re.MULTILINE),
+                re.compile(r"^\s*(?:public|private|protected|internal)?\s*(?:static|async)?\s*[A-Za-z0-9_<>\[\]]+\s+([A-Za-z0-9_]+)\s*\(", re.MULTILINE),
+            ],
+            "php": [
+                re.compile(r"^\s*(?:abstract)?\s*class\s+([A-Za-z0-9_]+)", re.MULTILINE),
+                re.compile(r"^\s*(?:public|private|protected)?\s*(?:static)?\s*function\s+([A-Za-z0-9_]+)", re.MULTILINE),
+            ],
+        }
+
+        patterns = patterns_map.get(language, [])
+        units = []
+        for pattern in patterns:
+            for match in pattern.finditer(source):
+                symbol = match.group(1)
+                if symbol in {"if", "for", "while", "switch", "catch", "return", "new", "class", "fn", "def", "func"}:
+                    continue
+                start_line = source[: match.start()].count("\n") + 1
+                end_line = min(start_line + 30, len(lines))
+                chunk_type = "class" if "class" in match.group(0) or "struct" in match.group(0) else "method"
                 units.append({
                     "symbol": symbol,
                     "start_line": start_line,
