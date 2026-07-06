@@ -356,21 +356,51 @@ def generate_project_trace_links(project_id: str, body: TraceGenerateRequest) ->
     if body.top_k < 1 or body.top_k > 20:
         raise HTTPException(status_code=400, detail="top_k must be between 1 and 20")
 
+    import time
+    from datetime import datetime, timezone
+    start_time = time.time()
+
     with database.SessionLocal() as session:
+        project_record = session.scalars(select(ProjectRecord).where(ProjectRecord.project_id == project_id)).first()
+        requirements_count = session.query(RequirementRecord).filter(RequirementRecord.project_id == project_id).count()
+        code_units_count = session.query(CodeUnitRecord).filter(CodeUnitRecord.project_id == project_id).count()
+
+        run_record = AnalysisRunRecord(
+            project_id=project_id,
+            commit_sha=project_record.last_commit_sha if project_record else None,
+            changed_files="[]",
+            requirements_count=requirements_count,
+            code_units_count=code_units_count,
+            trace_links_count=0,
+            execution_time_seconds=0.0,
+            created_at=datetime.now(timezone.utc),
+        )
+        session.add(run_record)
+        session.flush()
+        run_id = run_record.id
+
         result = generate_trace_links(
             session=session,
             vector_store=vector_store,
             project_id=project_id,
+            run_id=run_id,
             vector_size=settings.vector_size,
             top_k=body.top_k,
             embedding_model=settings.embedding_model,
         )
-        update_project_counts(
-            session=session,
-            project_id=project_id,
-            trace_links_count=result.links_generated,
-        )
-        matrix = build_trace_matrix(session=session, project_id=project_id)
+
+        duration = round(time.time() - start_time, 2)
+        run_record.trace_links_count = result.links_generated
+        run_record.execution_time_seconds = duration
+
+        if project_record:
+            project_record.trace_links_count = result.links_generated
+            project_record.code_units_count = code_units_count
+            project_record.requirements_count = requirements_count
+            project_record.last_run_at = datetime.now(timezone.utc)
+
+        session.commit()
+        matrix = build_trace_matrix(session=session, project_id=project_id, run_id=run_id)
     return {
         "generated": {
             "requirements_total": result.requirements_total,
@@ -385,10 +415,10 @@ def generate_project_trace_links(project_id: str, body: TraceGenerateRequest) ->
 
 
 @app.get("/api/projects/{project_id}/trace-matrix")
-def get_trace_matrix(project_id: str) -> dict[str, object]:
+def get_trace_matrix(project_id: str, run_id: Optional[int] = None) -> dict[str, object]:
     ensure_ready()
     with database.SessionLocal() as session:
-        return build_trace_matrix(session=session, project_id=project_id)
+        return build_trace_matrix(session=session, project_id=project_id, run_id=run_id)
 
 
 @app.get("/api/projects/{project_id}/vectors/sample")
@@ -505,35 +535,42 @@ def sync_project(project_id: str) -> dict[str, object]:
             )
             code_units_count = session.query(CodeUnitRecord).filter(CodeUnitRecord.project_id == project_id).count()
 
-        clear_project_trace_links(session=session, project_id=project_id)
-        trace_result = generate_trace_links(
-            session=session,
-            vector_store=vector_store,
-            project_id=project_id,
-            vector_size=settings.vector_size,
-            embedding_model=settings.embedding_model,
-        )
-
         requirements_count = session.query(RequirementRecord).filter(RequirementRecord.project_id == project_id).count()
-        trace_links_count = trace_result.links_generated
 
-        project_record.last_commit_sha = new_sha
-        project_record.code_units_count = code_units_count
-        project_record.trace_links_count = trace_links_count
-        project_record.last_run_at = datetime.now(timezone.utc)
-
-        duration = round(time.time() - start_time, 2)
         run_record = AnalysisRunRecord(
             project_id=project_id,
             commit_sha=new_sha,
             changed_files=json.dumps(changed_files) if changed_files else "[]",
             requirements_count=requirements_count,
             code_units_count=code_units_count,
-            trace_links_count=trace_links_count,
-            execution_time_seconds=duration,
+            trace_links_count=0,
+            execution_time_seconds=0.0,
             created_at=datetime.now(timezone.utc),
         )
         session.add(run_record)
+        session.flush()
+        run_id = run_record.id
+
+        trace_result = generate_trace_links(
+            session=session,
+            vector_store=vector_store,
+            project_id=project_id,
+            run_id=run_id,
+            vector_size=settings.vector_size,
+            embedding_model=settings.embedding_model,
+        )
+
+        trace_links_count = trace_result.links_generated
+        duration = round(time.time() - start_time, 2)
+
+        run_record.trace_links_count = trace_links_count
+        run_record.execution_time_seconds = duration
+
+        project_record.last_commit_sha = new_sha
+        project_record.code_units_count = code_units_count
+        project_record.trace_links_count = trace_links_count
+        project_record.last_run_at = datetime.now(timezone.utc)
+
         session.commit()
 
         return {
@@ -573,3 +610,87 @@ def list_runs(project_id: str) -> list[dict[str, object]]:
             }
             for r in records
         ]
+
+
+@app.get("/api/projects/{project_id}/runs/{run_id}/requirements/{req_id}/explanation")
+def get_explanation(project_id: str, run_id: int, req_id: str) -> dict[str, str]:
+    ensure_ready()
+    from .persistence import get_or_generate_explanation
+    with database.SessionLocal() as session:
+        explanation = get_or_generate_explanation(
+            session=session,
+            project_id=project_id,
+            run_id=run_id,
+            requirement_id=req_id,
+        )
+        return {"explanation": explanation}
+
+
+@app.get("/api/projects/{project_id}/runs/{run_id}/export/csv")
+def export_project_run_csv(project_id: str, run_id: int):
+    ensure_ready()
+    from .report_export import export_csv
+    with database.SessionLocal() as session:
+        project_record = session.scalars(select(ProjectRecord).where(ProjectRecord.project_id == project_id)).first()
+        project_name = project_record.name if project_record else project_id
+
+        actual_run_id = run_id
+        if actual_run_id == 0:
+            latest_run = session.scalars(
+                select(AnalysisRunRecord)
+                .where(AnalysisRunRecord.project_id == project_id)
+                .order_by(AnalysisRunRecord.created_at.desc())
+            ).first()
+            if latest_run:
+                actual_run_id = latest_run.id
+
+        matrix = build_trace_matrix(session=session, project_id=project_id, run_id=actual_run_id)
+        csv_buffer = export_csv(matrix, project_name)
+        
+        from fastapi.responses import StreamingResponse
+        return StreamingResponse(
+            iter([csv_buffer.getvalue()]),
+            media_type="text/csv",
+            headers={"Content-Disposition": f"attachment; filename=traceability_{project_id}_run_{actual_run_id}.csv"}
+        )
+
+
+@app.get("/api/projects/{project_id}/runs/{run_id}/export/pdf")
+def export_project_run_pdf(project_id: str, run_id: int):
+    ensure_ready()
+    from .report_export import export_pdf
+    with database.SessionLocal() as session:
+        project_record = session.scalars(select(ProjectRecord).where(ProjectRecord.project_id == project_id)).first()
+        project_name = project_record.name if project_record else project_id
+
+        actual_run_id = run_id
+        if actual_run_id == 0:
+            latest_run = session.scalars(
+                select(AnalysisRunRecord)
+                .where(AnalysisRunRecord.project_id == project_id)
+                .order_by(AnalysisRunRecord.created_at.desc())
+            ).first()
+            if latest_run:
+                actual_run_id = latest_run.id
+        
+        run_record = session.scalars(select(AnalysisRunRecord).where(AnalysisRunRecord.id == actual_run_id)).first()
+        if not run_record:
+            raise HTTPException(status_code=404, detail="Analysis run not found.")
+            
+        run_details = {
+            "created_at": run_record.created_at.isoformat(),
+            "commit_sha": run_record.commit_sha or "",
+            "code_units_count": run_record.code_units_count,
+        }
+        
+        matrix = build_trace_matrix(session=session, project_id=project_id, run_id=actual_run_id)
+        pdf_buffer = export_pdf(matrix, project_name, run_details)
+        
+        from fastapi.responses import StreamingResponse
+        return StreamingResponse(
+            iter([pdf_buffer.getvalue()]),
+            media_type="application/pdf",
+            headers={"Content-Disposition": f"attachment; filename=traceability_{project_id}_run_{actual_run_id}.pdf"}
+        )
+
+

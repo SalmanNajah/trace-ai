@@ -94,6 +94,28 @@ export default function Home() {
   const [runs, setRuns] = useState<AnalysisRun[]>([]);
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncMessage, setSyncMessage] = useState("");
+  const [activeRunId, setActiveRunId] = useState<number | null>(null);
+
+  async function handleSelectRun(runId: number) {
+    if (!activeProject) return;
+    setActiveRunId(runId);
+    setTraceMatrix(null);
+    setStepMessage("Loading historic run...");
+    setStep("resetting");
+    try {
+      const res = await fetch(`${API}/api/projects/${activeProject.project_id}/trace-matrix?run_id=${runId}`);
+      if (res.ok) {
+        setTraceMatrix(await res.json());
+        setStep("done");
+        setStepMessage("Loaded historic run");
+      } else {
+        setStep("idle");
+      }
+    } catch (e) {
+      setErrorMessage((e as Error).message);
+      setStep("error");
+    }
+  }
 
   async function fetchProjectRuns(projectId: string) {
     try {
@@ -231,6 +253,7 @@ export default function Home() {
     setErrorMessage("");
     setTraceMatrix(null);
     setSelectedRow(null);
+    setActiveRunId(null);
     startTimer();
 
     try {
@@ -319,9 +342,6 @@ export default function Home() {
 
   const isRunning = !["idle", "done", "error"].includes(step);
 
-  const implemented = traceMatrix?.rows.filter((r) => r.best_label === "Implemented").length || 0;
-  const partial = traceMatrix?.rows.filter((r) => r.best_label === "Partial").length || 0;
-  const missing = traceMatrix?.rows.filter((r) => r.best_label === "Missing").length || 0;
 
   async function loadProjectHistory(project: ProjectInfo) {
     setActiveProject(project);
@@ -329,6 +349,7 @@ export default function Home() {
     setView("analysis");
     setIsViewingHistory(true);
     setTraceMatrix(null);
+    setActiveRunId(null);
     setStepMessage("Loading project data...");
     setStep("resetting");
 
@@ -402,16 +423,32 @@ export default function Home() {
             </h1>
             <p className="text-xs text-foreground-muted flex items-center gap-2 mt-0.5">
               <span>{activeProject?.name || "Automated traceability"}</span>
-              {activeProject?.repo_type === "github" && (
-                <span className="inline-flex items-center gap-1 rounded bg-accent/10 px-1.5 py-0.5 text-[10px] font-medium text-accent">
+              {activeProject?.repo_type === "github" && activeProject?.github_url && (
+                <a
+                  href={activeProject.github_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 rounded bg-accent/10 px-1.5 py-0.5 text-[10px] font-medium text-accent hover:bg-accent/20 transition-all cursor-pointer"
+                >
                   <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.3 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61-.546-1.385-1.335-1.755-1.335-1.755-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.605-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 21.795 24 17.295 24 12c0-6.63-5.37-12-12-12"/></svg>
                   GitHub
-                </span>
+                </a>
               )}
               {activeProject?.last_commit_sha && (
-                <span className="inline-flex items-center gap-1 rounded bg-surface-raised px-1.5 py-0.5 text-[10px] font-mono text-foreground-subtle">
-                  commit: {activeProject.last_commit_sha.slice(0, 7)}
-                </span>
+                activeProject?.repo_type === "github" && activeProject?.github_url ? (
+                  <a
+                    href={`${activeProject.github_url.replace(/\.git$/, "")}/commit/${activeProject.last_commit_sha}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 rounded bg-surface-raised px-1.5 py-0.5 text-[10px] font-mono text-foreground-subtle hover:bg-surface-raised-hover transition-all cursor-pointer"
+                  >
+                    commit: {activeProject.last_commit_sha.slice(0, 7)}
+                  </a>
+                ) : (
+                  <span className="inline-flex items-center gap-1 rounded bg-surface-raised px-1.5 py-0.5 text-[10px] font-mono text-foreground-subtle">
+                    commit: {activeProject.last_commit_sha.slice(0, 7)}
+                  </span>
+                )
               )}
             </p>
           </div>
@@ -428,6 +465,30 @@ export default function Home() {
               </svg>
               {isSyncing ? "Syncing..." : "Sync Latest"}
             </button>
+          )}
+          {traceMatrix && (
+            <>
+              <a
+                href={`${API}/api/projects/${activeProject?.project_id}/runs/${activeRunId || 0}/export/csv`}
+                download
+                className="flex items-center gap-1.5 rounded-lg border border-border-subtle bg-surface-raised/40 px-3.5 py-2 text-sm font-medium text-foreground-muted hover:bg-surface-raised hover:text-foreground transition-all cursor-pointer"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>
+                </svg>
+                CSV
+              </a>
+              <a
+                href={`${API}/api/projects/${activeProject?.project_id}/runs/${activeRunId || 0}/export/pdf`}
+                download
+                className="flex items-center gap-1.5 rounded-lg border border-border-subtle bg-surface-raised/40 px-3.5 py-2 text-sm font-medium text-foreground-muted hover:bg-surface-raised hover:text-foreground transition-all cursor-pointer"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>
+                </svg>
+                PDF
+              </a>
+            </>
           )}
           <button
             onClick={goHome}
@@ -520,12 +581,12 @@ export default function Home() {
           />
           <StatCard
             label="Code Units"
-            value={codeCount}
+            value={codeCount || activeProject?.code_units_count || 0}
             info="Code chunks (functions, classes, methods) parsed via tree-sitter."
           />
           <StatCard
             label="Trace Links"
-            value={linkCount}
+            value={linkCount || activeProject?.trace_links_count || 0}
             info={`Requirement-to-code links generated (${reqCount || traceMatrix?.requirements_total || 0} × top-10).`}
           />
           <StatCard
@@ -545,22 +606,8 @@ export default function Home() {
       )}
 
       {traceMatrix && traceMatrix.rows.length > 0 && (
-        <div className="flex items-center gap-6 rounded-xl border border-border-subtle bg-surface px-5 py-3 text-xs stagger-item">
-          <span className="flex items-center gap-1.5">
-            <span className="h-2 w-2 rounded-full bg-emerald-400" />
-            Implemented: {implemented}
-          </span>
-          <span className="flex items-center gap-1.5">
-            <span className="h-2 w-2 rounded-full bg-amber-400" />
-            Partial: {partial}
-          </span>
-          <span className="flex items-center gap-1.5">
-            <span className="h-2 w-2 rounded-full bg-red-400" />
-            Missing: {missing}
-          </span>
-          <span className="ml-auto text-foreground-subtle">
-            {traceMatrix.requirements_linked}/{traceMatrix.requirements_total} requirements linked
-          </span>
+        <div className="stagger-item">
+          <CoverageDashboard matrix={traceMatrix} />
         </div>
       )}
 
@@ -631,7 +678,11 @@ export default function Home() {
           </div>
 
           <div className="lg:col-span-1">
-            <RunHistoryTimeline runs={runs} />
+            <RunHistoryTimeline
+              runs={runs}
+              activeRunId={activeRunId}
+              onSelectRun={handleSelectRun}
+            />
           </div>
         </div>
       )}
@@ -640,8 +691,13 @@ export default function Home() {
         &copy; {new Date().getFullYear()} TraceAI. All rights reserved.
       </footer>
 
-      {selectedRow && (
-        <DetailModal row={selectedRow} onClose={() => setSelectedRow(null)} />
+      {selectedRow && activeProject && (
+        <DetailModal
+          row={selectedRow}
+          projectId={activeProject.project_id}
+          runId={activeRunId}
+          onClose={() => setSelectedRow(null)}
+        />
       )}
     </div>
   );
@@ -1011,8 +1067,22 @@ function PipelineSteps({ currentStep, repoType }: { currentStep: PipelineStep; r
   );
 }
 
-function DetailModal({ row, onClose }: { row: TraceMatrixRow; onClose: () => void }) {
+function DetailModal({
+  row,
+  projectId,
+  runId,
+  onClose,
+}: {
+  row: TraceMatrixRow;
+  projectId: string;
+  runId: number | null;
+  onClose: () => void;
+}) {
   const backdropRef = useRef<HTMLDivElement>(null);
+  const bestLink = row.links[0] || null;
+  const [explanation, setExplanation] = useState<string>(bestLink?.explanation || "");
+  const needsFetch = !!bestLink && (!bestLink.explanation || bestLink.explanation.startsWith("Semantic match between requirement"));
+  const [loadingExp, setLoadingExp] = useState<boolean>(needsFetch);
 
   useEffect(() => {
     function handleKey(e: KeyboardEvent) { if (e.key === "Escape") onClose(); }
@@ -1024,7 +1094,24 @@ function DetailModal({ row, onClose }: { row: TraceMatrixRow; onClose: () => voi
     };
   }, [onClose]);
 
-  const bestLink = row.links[0] || null;
+  useEffect(() => {
+    if (!bestLink || !projectId) return;
+
+    if (needsFetch) {
+      const effectiveRunId = runId || 0;
+      fetch(`${API}/api/projects/${projectId}/runs/${effectiveRunId}/requirements/${row.requirement_id}/explanation`)
+        .then((res) => res.json())
+        .then((data) => {
+          if (data.explanation) {
+            setExplanation(data.explanation);
+            bestLink.explanation = data.explanation; // cache in memory
+          }
+        })
+        .catch((err) => console.error("Failed to load explanation:", err))
+        .finally(() => setLoadingExp(false));
+    }
+  }, [bestLink, projectId, runId, row.requirement_id, needsFetch]);
+
   const implPercent = Math.round(row.best_score * 100);
   const progressColor =
     row.best_label === "Implemented"
@@ -1075,6 +1162,27 @@ function DetailModal({ row, onClose }: { row: TraceMatrixRow; onClose: () => voi
             </div>
             <p className="text-sm leading-relaxed text-foreground">{row.text}</p>
           </div>
+
+          {bestLink && (
+            <div className="border-b border-border-subtle px-6 py-4 bg-surface-raised/40">
+              <div className="text-[10px] font-medium uppercase tracking-wider text-accent/70 mb-2">
+                Why This Matches
+              </div>
+              {loadingExp ? (
+                <div className="flex items-center gap-2 text-xs text-foreground-muted italic">
+                  <svg className="animate-spin h-3.5 w-3.5 text-accent" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                  </svg>
+                  Generating smart explanation via Gemini...
+                </div>
+              ) : (
+                <p className="text-sm leading-relaxed text-foreground-muted italic">
+                  &ldquo;{explanation}&rdquo;
+                </p>
+              )}
+            </div>
+          )}
 
           {bestLink ? (
             <div className="px-6 py-4">
@@ -1232,7 +1340,162 @@ function SimpleHighlight({ code }: { code: string }) {
   return <code dangerouslySetInnerHTML={{ __html: html }} />;
 }
 
-function RunHistoryTimeline({ runs }: { runs: AnalysisRun[] }) {
+function CoverageDashboard({ matrix }: { matrix: TraceMatrixResponse }) {
+  const total = matrix.requirements_total;
+  const rows = matrix.rows || [];
+
+  const implemented = rows.filter((r) => r.best_label === "Implemented").length;
+  const partial = rows.filter((r) => r.best_label === "Partial").length;
+  const missing = rows.filter((r) => r.best_label === "Missing").length;
+
+  const pctImpl = total > 0 ? (implemented / total) * 100 : 0;
+  const pctPart = total > 0 ? (partial / total) * 100 : 0;
+  const pctMiss = total > 0 ? (missing / total) * 100 : 0;
+
+  // Buckets calculation
+  const highCertainty = rows.filter((r) => r.best_score >= 0.65).length;
+  const mediumCertainty = rows.filter((r) => r.best_score >= 0.50 && r.best_score < 0.65).length;
+  const lowCertainty = rows.filter((r) => r.best_score >= 0.30 && r.best_score < 0.50).length;
+  const unlinked = rows.filter((r) => r.best_score < 0.30 || r.best_label === "Missing").length;
+
+  const maxCount = Math.max(highCertainty, mediumCertainty, lowCertainty, unlinked, 1);
+
+  return (
+    <div className="grid gap-6 md:grid-cols-2 rounded-2xl border border-border-subtle bg-surface p-6 mb-6">
+      {/* Left Column: Traceability Health Bar */}
+      <div className="flex flex-col justify-center space-y-4">
+        <div>
+          <h4 className="text-sm font-semibold text-foreground mb-1">Traceability Coverage</h4>
+          <p className="text-xs text-foreground-subtle">Requirement mapping coverage and status summary.</p>
+        </div>
+
+        {/* Stacked Progress Bar */}
+        <div className="h-4 w-full rounded-full bg-surface-raised flex overflow-hidden border border-border-subtle">
+          {pctImpl > 0 && (
+            <div
+              style={{ width: `${pctImpl}%` }}
+              className="h-full bg-emerald-500 transition-all duration-500 hover:brightness-110"
+              title={`Implemented: ${implemented} (${pctImpl.toFixed(1)}%)`}
+            />
+          )}
+          {pctPart > 0 && (
+            <div
+              style={{ width: `${pctPart}%` }}
+              className="h-full bg-amber-500 transition-all duration-500 hover:brightness-110"
+              title={`Partial: ${partial} (${pctPart.toFixed(1)}%)`}
+            />
+          )}
+          {pctMiss > 0 && (
+            <div
+              style={{ width: `${pctMiss}%` }}
+              className="h-full bg-red-500 transition-all duration-500 hover:brightness-110"
+              title={`Missing: ${missing} (${pctMiss.toFixed(1)}%)`}
+            />
+          )}
+        </div>
+
+        {/* Legend */}
+        <div className="grid grid-cols-3 gap-2 text-xs">
+          <div className="flex flex-col gap-0.5 rounded-lg bg-emerald-500/5 border border-emerald-500/10 p-2.5">
+            <span className="text-[10px] font-bold text-emerald-400 uppercase tracking-wider">Implemented</span>
+            <span className="text-base font-serif font-bold text-foreground">{implemented}</span>
+            <span className="text-[10px] text-foreground-subtle">{pctImpl.toFixed(1)}% of total</span>
+          </div>
+          <div className="flex flex-col gap-0.5 rounded-lg bg-amber-500/5 border border-amber-500/10 p-2.5">
+            <span className="text-[10px] font-bold text-amber-400 uppercase tracking-wider">Partial</span>
+            <span className="text-base font-serif font-bold text-foreground">{partial}</span>
+            <span className="text-[10px] text-foreground-subtle">{pctPart.toFixed(1)}% of total</span>
+          </div>
+          <div className="flex flex-col gap-0.5 rounded-lg bg-red-500/5 border border-red-500/10 p-2.5">
+            <span className="text-[10px] font-bold text-red-400 uppercase tracking-wider">Missing</span>
+            <span className="text-base font-serif font-bold text-foreground">{missing}</span>
+            <span className="text-[10px] text-foreground-subtle">{pctMiss.toFixed(1)}% of total</span>
+          </div>
+        </div>
+      </div>
+
+      {/* Right Column: Trace Quality Distribution */}
+      <div className="flex flex-col justify-center space-y-4">
+        <div>
+          <h4 className="text-sm font-semibold text-foreground mb-1">Mapping Quality Breakdown</h4>
+          <p className="text-xs text-foreground-subtle">Confidence validation level of requirements-to-code trace links.</p>
+        </div>
+
+        <div className="space-y-2">
+          {/* High Certainty */}
+          <div className="flex items-center gap-3 text-xs">
+            <div className="w-32 text-foreground-muted shrink-0 flex items-center gap-1.5">
+              <span className="h-2 w-2 rounded-full bg-emerald-500" />
+              <span>Strong Match (≥ 0.65)</span>
+            </div>
+            <div className="h-3 flex-1 rounded bg-surface-raised overflow-hidden">
+              <div
+                style={{ width: `${(highCertainty / maxCount) * 100}%` }}
+                className="h-full bg-emerald-500/80 transition-all duration-500"
+              />
+            </div>
+            <span className="w-6 text-right font-medium text-foreground tabular-nums">{highCertainty}</span>
+          </div>
+
+          {/* Medium Certainty */}
+          <div className="flex items-center gap-3 text-xs">
+            <div className="w-32 text-foreground-muted shrink-0 flex items-center gap-1.5">
+              <span className="h-2 w-2 rounded-full bg-blue-500" />
+              <span>Moderate (0.50 – 0.65)</span>
+            </div>
+            <div className="h-3 flex-1 rounded bg-surface-raised overflow-hidden">
+              <div
+                style={{ width: `${(mediumCertainty / maxCount) * 100}%` }}
+                className="h-full bg-blue-500/80 transition-all duration-500"
+              />
+            </div>
+            <span className="w-6 text-right font-medium text-foreground tabular-nums">{mediumCertainty}</span>
+          </div>
+
+          {/* Low Certainty */}
+          <div className="flex items-center gap-3 text-xs">
+            <div className="w-32 text-foreground-muted shrink-0 flex items-center gap-1.5">
+              <span className="h-2 w-2 rounded-full bg-amber-500" />
+              <span>Weak Match (0.30 – 0.50)</span>
+            </div>
+            <div className="h-3 flex-1 rounded bg-surface-raised overflow-hidden">
+              <div
+                style={{ width: `${(lowCertainty / maxCount) * 100}%` }}
+                className="h-full bg-amber-500/80 transition-all duration-500"
+              />
+            </div>
+            <span className="w-6 text-right font-medium text-foreground tabular-nums">{lowCertainty}</span>
+          </div>
+
+          {/* Unlinked */}
+          <div className="flex items-center gap-3 text-xs">
+            <div className="w-32 text-foreground-muted shrink-0 flex items-center gap-1.5">
+              <span className="h-2 w-2 rounded-full bg-red-500" />
+              <span>No Match (&lt; 0.30)</span>
+            </div>
+            <div className="h-3 flex-1 rounded bg-surface-raised overflow-hidden">
+              <div
+                style={{ width: `${(unlinked / maxCount) * 100}%` }}
+                className="h-full bg-red-500/80 transition-all duration-500"
+              />
+            </div>
+            <span className="w-6 text-right font-medium text-foreground tabular-nums">{unlinked}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RunHistoryTimeline({
+  runs,
+  activeRunId,
+  onSelectRun,
+}: {
+  runs: AnalysisRun[];
+  activeRunId: number | null;
+  onSelectRun: (runId: number) => void;
+}) {
   return (
     <section className="rounded-2xl border border-border-subtle bg-surface p-5 h-full">
       <h3 className="font-serif text-lg mb-4">Run History</h3>
@@ -1245,10 +1508,19 @@ function RunHistoryTimeline({ runs }: { runs: AnalysisRun[] }) {
               month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
             });
             const changedFiles = JSON.parse(r.changed_files || "[]");
+            const isActive = activeRunId === r.id || (activeRunId === null && i === 0);
 
             return (
-              <div key={r.id} className="relative">
-                <span className={`absolute left-[-21px] top-1.5 h-2 w-2 rounded-full border border-surface ${i === 0 ? "bg-accent" : "bg-foreground-subtle"}`} />
+              <div
+                key={r.id}
+                onClick={() => onSelectRun(r.id)}
+                className={`relative cursor-pointer p-2.5 rounded-xl border transition-all ${
+                  isActive
+                    ? "bg-accent/5 border-accent/25 text-foreground"
+                    : "border-transparent hover:bg-surface-raised/40 text-foreground-muted"
+                }`}
+              >
+                <span className={`absolute left-[-21px] top-4.5 h-2 w-2 rounded-full border border-surface ${isActive ? "bg-accent" : "bg-foreground-subtle"}`} />
                 <div className="text-xs font-semibold text-foreground">{date}</div>
                 {r.commit_sha && (
                   <div className="text-[10px] font-mono text-accent mt-0.5">

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import csv
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
@@ -153,6 +156,7 @@ def generate_trace_links(
     session: Session,
     vector_store: VectorStore,
     project_id: str,
+    run_id: int,
     vector_size: int,
     top_k: int = 5,
     embedding_model: str = "gemini-embedding-001",
@@ -171,11 +175,9 @@ def generate_trace_links(
     ).all()
 
     if not requirements or not code_units:
-        clear_project_trace_links(session=session, project_id=project_id)
         return TraceGenerationResult(requirements_total=len(requirements), requirements_with_links=0, links_generated=0)
 
     code_index = {item.code_unit_id: item for item in code_units}
-    clear_project_trace_links(session=session, project_id=project_id)
     generated = 0
     req_with_links = 0
     now = datetime.now(timezone.utc)
@@ -195,6 +197,9 @@ def generate_trace_links(
 
     # Build req_key -> requirement index for query expansion
     req_index = {r.req_key: r for r in requirements}
+
+    links_to_add: list[TraceLinkRecord] = []
+    best_links: list[tuple[TraceLinkRecord, str, str]] = []
 
     for requirement in requirements:
         # Query expansion: for exception flows, prepend parent UC text + domain keywords
@@ -321,21 +326,24 @@ def generate_trace_links(
                 f"Semantic match between requirement `{requirement.req_key}` and "
                 f"`{code_unit.file_path}:{code_unit.start_line}-{code_unit.end_line}`"
             )
-            session.add(
-                TraceLinkRecord(
-                    project_id=project_id,
-                    requirement_id=requirement.requirement_id,
-                    req_key=requirement.req_key,
-                    code_unit_id=code_unit.code_unit_id,
-                    code_key=code_unit.code_key,
-                    score=display_score,
-                    rank=rank,
-                    label=label,
-                    explanation=explanation,
-                    created_at=now,
-                )
+            link_record = TraceLinkRecord(
+                project_id=project_id,
+                run_id=run_id,
+                requirement_id=requirement.requirement_id,
+                req_key=requirement.req_key,
+                code_unit_id=code_unit.code_unit_id,
+                code_key=code_unit.code_key,
+                score=display_score,
+                rank=rank,
+                label=label,
+                explanation=explanation,
+                created_at=now,
             )
+            links_to_add.append(link_record)
             generated += 1
+
+    for link in links_to_add:
+        session.add(link)
 
     session.commit()
     return TraceGenerationResult(
@@ -345,17 +353,38 @@ def generate_trace_links(
     )
 
 
-def build_trace_matrix(*, session: Session, project_id: str) -> dict[str, object]:
+def build_trace_matrix(*, session: Session, project_id: str, run_id: int | None = None) -> dict[str, object]:
     requirements = session.scalars(
         select(RequirementRecord)
         .where(RequirementRecord.project_id == project_id)
         .order_by(RequirementRecord.id)
     ).all()
-    links = session.scalars(
-        select(TraceLinkRecord)
-        .where(TraceLinkRecord.project_id == project_id)
-        .order_by(TraceLinkRecord.requirement_id, TraceLinkRecord.rank)
-    ).all()
+
+    # Determine specific run_id if not passed
+    actual_run_id = run_id
+    if actual_run_id is None or actual_run_id == 0:
+        from .storage import AnalysisRunRecord
+        latest_run = session.scalars(
+            select(AnalysisRunRecord)
+            .where(AnalysisRunRecord.project_id == project_id)
+            .order_by(AnalysisRunRecord.created_at.desc())
+        ).first()
+        if latest_run:
+            actual_run_id = latest_run.id
+
+    if actual_run_id is not None:
+        links = session.scalars(
+            select(TraceLinkRecord)
+            .where(TraceLinkRecord.project_id == project_id, TraceLinkRecord.run_id == actual_run_id)
+            .order_by(TraceLinkRecord.requirement_id, TraceLinkRecord.rank)
+        ).all()
+    else:
+        links = session.scalars(
+            select(TraceLinkRecord)
+            .where(TraceLinkRecord.project_id == project_id)
+            .order_by(TraceLinkRecord.requirement_id, TraceLinkRecord.rank)
+        ).all()
+
     code_units = session.scalars(
         select(CodeUnitRecord)
         .where(CodeUnitRecord.project_id == project_id)
@@ -681,3 +710,94 @@ def sync_changed_files(
 
     session.commit()
     return updated_count
+
+
+def get_or_generate_explanation(
+    *,
+    session: Session,
+    project_id: str,
+    run_id: int,
+    requirement_id: str,
+) -> str:
+    """Load or generate a natural language explanation for a requirement-to-code trace link.
+
+    Caches explanations by reusing previously generated explanations for the same requirement-code unit pair.
+    """
+    actual_run_id = run_id
+    if actual_run_id is None or actual_run_id == 0:
+        from .storage import AnalysisRunRecord
+        latest_run = session.scalars(
+            select(AnalysisRunRecord)
+            .where(AnalysisRunRecord.project_id == project_id)
+            .order_by(AnalysisRunRecord.created_at.desc())
+        ).first()
+        if latest_run:
+            actual_run_id = latest_run.id
+
+    link = session.scalars(
+        select(TraceLinkRecord)
+        .where(
+            TraceLinkRecord.project_id == project_id,
+            TraceLinkRecord.run_id == actual_run_id,
+            TraceLinkRecord.requirement_id == requirement_id,
+            TraceLinkRecord.rank == 1,
+        )
+    ).first()
+
+    if not link:
+        return "No trace link found."
+
+    # If already generated
+    if link.explanation and not link.explanation.startswith("Semantic match between requirement"):
+        return link.explanation
+
+    # Check database cache for any matching requirement + code_unit pair that has an explanation
+    cached_link = session.scalars(
+        select(TraceLinkRecord)
+        .where(
+            TraceLinkRecord.requirement_id == requirement_id,
+            TraceLinkRecord.code_unit_id == link.code_unit_id,
+            ~TraceLinkRecord.explanation.like("Semantic match between requirement%")
+        )
+        .limit(1)
+    ).first()
+
+    if cached_link and cached_link.explanation:
+        link.explanation = cached_link.explanation
+        session.commit()
+        return link.explanation
+
+    # Query Gemini on-demand
+    requirement = session.scalars(
+        select(RequirementRecord)
+        .where(RequirementRecord.project_id == project_id, RequirementRecord.requirement_id == requirement_id)
+    ).first()
+
+    code_unit = session.scalars(
+        select(CodeUnitRecord)
+        .where(CodeUnitRecord.project_id == project_id, CodeUnitRecord.code_unit_id == link.code_unit_id)
+    ).first()
+
+    if not requirement or not code_unit:
+        return link.explanation
+
+    from traceai_v2.explainer import generate_batch_explanations
+    batch_items = [{
+        "id": 0,
+        "requirement": requirement.text,
+        "file_path": link.code_key,
+        "code_snippet": code_unit.content,
+    }]
+
+    try:
+        explanations = generate_batch_explanations(batch_items)
+        if explanations and explanations[0]:
+            exp_text = explanations[0].strip()
+            link.explanation = exp_text
+            session.commit()
+            return exp_text
+    except Exception as exc:
+        logger.warning("Failed to generate lazy explanation: %s", exc)
+
+    return link.explanation
+

@@ -69,6 +69,7 @@ class TraceLinkRecord(Base):
     __table_args__ = (
         UniqueConstraint(
             "project_id",
+            "run_id",
             "requirement_id",
             "code_unit_id",
             name="uq_trace_links_v2_project_pair",
@@ -77,6 +78,7 @@ class TraceLinkRecord(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     project_id: Mapped[str] = mapped_column(String(64), index=True)
+    run_id: Mapped[Optional[int]] = mapped_column(Integer, index=True, nullable=True)
     requirement_id: Mapped[str] = mapped_column(String(64), index=True)
     req_key: Mapped[str] = mapped_column(String(64), index=True)
     code_unit_id: Mapped[str] = mapped_column(String(64), index=True)
