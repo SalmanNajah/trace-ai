@@ -801,3 +801,99 @@ def get_or_generate_explanation(
 
     return link.explanation
 
+
+def build_impact_analysis(
+    *,
+    session: Session,
+    project_id: str,
+    file_path: str,
+    run_id: int | None = None,
+) -> dict[str, object]:
+    from .storage import AnalysisRunRecord
+
+    actual_run_id = run_id
+    if actual_run_id is None or actual_run_id == 0:
+        latest = session.scalars(
+            select(AnalysisRunRecord)
+            .where(AnalysisRunRecord.project_id == project_id)
+            .order_by(AnalysisRunRecord.created_at.desc())
+        ).first()
+        if latest:
+            actual_run_id = latest.id
+
+    code_units = session.scalars(
+        select(CodeUnitRecord).where(
+            CodeUnitRecord.project_id == project_id,
+            CodeUnitRecord.file_path == file_path,
+        )
+    ).all()
+
+    if not code_units:
+        return {
+            "file_path": file_path,
+            "affected_requirements": [],
+            "risk_level": "low",
+            "affected_count": 0,
+        }
+
+    code_unit_ids = [cu.code_unit_id for cu in code_units]
+
+    links = session.scalars(
+        select(TraceLinkRecord).where(
+            TraceLinkRecord.project_id == project_id,
+            TraceLinkRecord.run_id == actual_run_id,
+            TraceLinkRecord.code_unit_id.in_(code_unit_ids),
+        )
+    ).all()
+
+    req_best: dict[str, dict] = {}
+    for link in links:
+        existing = req_best.get(link.requirement_id)
+        if existing is None or link.score > existing["score"]:
+            req_best[link.requirement_id] = {
+                "requirement_id": link.requirement_id,
+                "req_key": link.req_key,
+                "score": link.score,
+                "label": link.label,
+                "code_key": link.code_key,
+            }
+
+    req_ids = list(req_best.keys())
+    if req_ids:
+        reqs = session.scalars(
+            select(RequirementRecord).where(
+                RequirementRecord.project_id == project_id,
+                RequirementRecord.requirement_id.in_(req_ids),
+            )
+        ).all()
+        req_text_map = {r.requirement_id: r.text for r in reqs}
+    else:
+        req_text_map = {}
+
+    affected = []
+    for rid, info in req_best.items():
+        affected.append({
+            "requirement_id": rid,
+            "req_key": info["req_key"],
+            "text": req_text_map.get(rid, ""),
+            "score": round(info["score"], 4),
+            "label": info["label"],
+            "code_key": info["code_key"],
+        })
+
+    affected.sort(key=lambda x: x["score"], reverse=True)
+
+    count = len(affected)
+    if count > 3:
+        risk_level = "high"
+    elif count >= 1:
+        risk_level = "medium"
+    else:
+        risk_level = "low"
+
+    return {
+        "file_path": file_path,
+        "affected_requirements": affected,
+        "risk_level": risk_level,
+        "affected_count": count,
+    }

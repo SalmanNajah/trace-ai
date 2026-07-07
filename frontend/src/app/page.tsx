@@ -687,6 +687,14 @@ export default function Home() {
         </div>
       )}
 
+      {traceMatrix && traceMatrix.rows.length > 0 && activeProject && (
+        <ImpactAnalysisSection
+          matrix={traceMatrix}
+          projectId={activeProject.project_id}
+          runId={activeRunId}
+        />
+      )}
+
       <footer className="mt-auto border-t border-border-subtle pt-6 pb-4 text-center text-xs text-foreground-subtle">
         &copy; {new Date().getFullYear()} TraceAI. All rights reserved.
       </footer>
@@ -1484,6 +1492,156 @@ function CoverageDashboard({ matrix }: { matrix: TraceMatrixResponse }) {
         </div>
       </div>
     </div>
+  );
+}
+
+type ImpactResult = {
+  file_path: string;
+  affected_requirements: {
+    requirement_id: string;
+    req_key: string;
+    text: string;
+    score: number;
+    label: string;
+    code_key: string;
+  }[];
+  risk_level: "high" | "medium" | "low";
+  affected_count: number;
+};
+
+function ImpactAnalysisSection({
+  matrix,
+  projectId,
+  runId,
+}: {
+  matrix: TraceMatrixResponse;
+  projectId: string;
+  runId: number | null;
+}) {
+  const [selectedFile, setSelectedFile] = useState<string>("");
+  const [impact, setImpact] = useState<ImpactResult | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const uniqueFiles = Array.from(
+    new Set(
+      matrix.rows
+        .flatMap((r) => r.links.map((l) => l.file_path))
+        .filter(Boolean)
+    )
+  ).sort();
+
+  function fetchImpact(filePath: string) {
+    setSelectedFile(filePath);
+    if (!filePath || !projectId) {
+      setImpact(null);
+      return;
+    }
+    setLoading(true);
+    const effectiveRunId = runId || 0;
+    fetch(
+      `${API}/api/projects/${projectId}/impact?file_path=${encodeURIComponent(filePath)}&run_id=${effectiveRunId}`
+    )
+      .then((res) => res.json())
+      .then((data: ImpactResult) => setImpact(data))
+      .catch((err) => console.error("Impact analysis failed:", err))
+      .finally(() => setLoading(false));
+  }
+
+  const riskColors = {
+    high: { bg: "bg-red-500/10", border: "border-red-500/20", text: "text-red-400", icon: "🔴" },
+    medium: { bg: "bg-amber-500/10", border: "border-amber-500/20", text: "text-amber-400", icon: "🟡" },
+    low: { bg: "bg-emerald-500/10", border: "border-emerald-500/20", text: "text-emerald-400", icon: "🟢" },
+  };
+
+  return (
+    <section className="rounded-2xl border border-border-subtle bg-surface p-5 stagger-item">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between mb-4">
+        <div>
+          <h3 className="font-serif text-lg">Impact Analysis</h3>
+          <p className="text-xs text-foreground-subtle mt-0.5">
+            Select a file to see which requirements it affects.
+          </p>
+        </div>
+        <select
+          value={selectedFile}
+          onChange={(e) => fetchImpact(e.target.value)}
+          className="rounded-lg border border-border-subtle bg-surface-raised px-3 py-2 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-accent max-w-xs"
+        >
+          <option value="">Choose a file…</option>
+          {uniqueFiles.map((fp) => (
+            <option key={fp} value={fp}>
+              {fp}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      {loading && (
+        <div className="text-xs text-foreground-subtle py-4 text-center animate-pulse">
+          Analyzing impact…
+        </div>
+      )}
+
+      {!loading && impact && (
+        <div className="space-y-4">
+          {/* Risk Level Banner */}
+          <div
+            className={`flex items-center gap-2 rounded-xl px-4 py-2.5 text-xs font-medium border ${riskColors[impact.risk_level].bg} ${riskColors[impact.risk_level].border}`}
+          >
+            <span>{riskColors[impact.risk_level].icon}</span>
+            <span className={riskColors[impact.risk_level].text}>
+              {impact.risk_level.toUpperCase()} RISK
+            </span>
+            <span className="text-foreground-muted">
+              — {impact.affected_count} requirement{impact.affected_count !== 1 ? "s" : ""} affected
+            </span>
+          </div>
+
+          {/* Affected Requirements List */}
+          {impact.affected_requirements.length > 0 && (
+            <div className="overflow-auto rounded-xl border border-border-subtle" style={{ maxHeight: "280px" }}>
+              <table className="min-w-full text-xs">
+                <thead className="sticky top-0 bg-surface z-10">
+                  <tr className="border-b border-border-subtle text-left text-[10px] uppercase tracking-wide text-foreground-subtle">
+                    <th className="px-3 py-2">Requirement</th>
+                    <th className="px-3 py-2">Description</th>
+                    <th className="px-3 py-2 text-right">Score</th>
+                    <th className="px-3 py-2">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {impact.affected_requirements.map((req) => (
+                    <tr
+                      key={req.requirement_id}
+                      className="border-b border-border-subtle/50 transition-colors hover:bg-surface-raised/50"
+                    >
+                      <td className="px-3 py-2 font-medium text-foreground whitespace-nowrap">
+                        {req.req_key}
+                      </td>
+                      <td className="px-3 py-2 text-foreground-muted max-w-sm truncate">
+                        {req.text}
+                      </td>
+                      <td className="px-3 py-2 text-right tabular-nums text-foreground-muted">
+                        {req.score.toFixed(3)}
+                      </td>
+                      <td className="px-3 py-2">
+                        <StatusPill label={req.label as "Implemented" | "Partial" | "Missing"} />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      {!loading && !impact && selectedFile === "" && (
+        <div className="text-xs text-foreground-subtle py-6 text-center">
+          Select a file from the dropdown above to run impact analysis.
+        </div>
+      )}
+    </section>
   );
 }
 

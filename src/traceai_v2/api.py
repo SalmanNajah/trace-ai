@@ -12,6 +12,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 
 from .persistence import (
+    build_impact_analysis,
     build_trace_matrix,
     create_project,
     generate_trace_links,
@@ -694,3 +695,14 @@ def export_project_run_pdf(project_id: str, run_id: int):
         )
 
 
+@app.get("/api/projects/{project_id}/impact")
+def impact_analysis(project_id: str, file_path: str, run_id: int = 0):
+    ensure_ready()
+    with database.SessionLocal() as session:
+        result = build_impact_analysis(
+            session=session,
+            project_id=project_id,
+            file_path=file_path,
+            run_id=run_id,
+        )
+        return result
