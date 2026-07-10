@@ -11,302 +11,203 @@ User (Browser)
     │
     ▼
 ┌─────────────────────┐
-│  Frontend (Next.js)  │  page.tsx → UI, file upload, trace matrix
-│  localhost:3000      │
+│  Frontend (Next.js)  │  page.tsx → UI, files, matrix, evaluations, impact
+│  localhost:3000      │  lib/tracing.ts → scoring constants & calculations
 └────────┬────────────┘
          │ HTTP
          ▼
-┌─────────────────────┐
-│  Backend (FastAPI)   │  api.py → REST endpoints
-│  localhost:8100      │
-│                      │
-│  ┌────────────────┐  │
-│  │ persistence.py │◄─│── Core pipeline: retrieval + reranking
-│  │ reranker.py    │  │
-│  │ bm25_index.py  │  │
-│  └───────┬────────┘  │
-│          │           │
-│    ┌─────┴─────┐     │
-│    ▼           ▼     │
-│  Qdrant    Postgres  │
-│ (vectors)  (records) │
-└─────────────────────┘
+┌─────────────────────────────────────────────────────────┐
+│  Backend (FastAPI)   api.py → REST endpoints            │
+│  localhost:8100                                         │
+│                                                         │
+│  ┌─────────────────┐  github_integration.py ◄─── Git    │
+│  │ persistence.py  │◄─ Sync pipeline                    │
+│  │ reranker.py     │                                    │
+│  │ bm25_index.py   │                                    │
+│  │ explainer.py    │◄─ RAG explainer using Gemini LLM   │
+│  │ report_export.py│── PDF / CSV generator              │
+│  └───────┬─────────┘                                    │
+│          │                                              │
+│    ┌─────┴─────┐                                        │
+│    ▼           ▼                                        │
+│  Qdrant    Postgres                                     │
+│ (vectors)  (records)                                    │
+└─────────────────────────────────────────────────────────┘
 ```
 
 ---
 
 ## Core Backend — `src/traceai_v2/`
 
-### `api.py` (269 lines)
+### `api.py`
 
-**What:** FastAPI REST endpoints. The HTTP interface for everything.
+**What:** FastAPI REST endpoints. The HTTP interface for the application.
 
 **Key endpoints:**
-- `POST /requirements/upload` — accepts PDF/DOCX/TXT, triggers parsing + embedding
-- `POST /repo/ingest` — accepts a local path, triggers code parsing + embedding
-- `POST /trace-links/generate` — runs the retrieval pipeline
-- `GET /trace-matrix` — returns the full matrix for the UI
+- `POST /api/projects` — Creates projects
+- `POST /api/projects/{id}/requirements/upload` — Accepts PDF/DOCX/TXT requirements files and triggers parsing & embedding
+- `POST /api/projects/{id}/repo/ingest` — Ingests a local repository path
+- `POST /api/projects/{id}/trace-links/generate` — Runs the hybrid retrieval & rerank pipeline
+- `GET /api/projects/{id}/trace-matrix` — Assembles the trace link matrix with gold standard evaluations
+- `POST /api/projects/{id}/sync` — Syncs a GitHub project incrementally
+- `GET /api/projects/{id}/runs/{run_id}/requirements/{req_id}/explanation` — Computes/retrieves RAG-based natural language trace explanations
+- `GET /api/projects/{id}/runs/{run_id}/export/pdf` / `/export/csv` — Streams report documents
+- `GET /api/projects/{id}/impact` — Generates impact analysis risks and blast radius metrics
 
-**Why it exists:** Decouples the UI from the business logic. The frontend only talks HTTP.
-
----
-
-### `persistence.py` (482 lines) ⭐ THE CORE
-
-**What:** The brain of the system. Contains the full trace link generation pipeline.
-
-**Key function — `search_and_trace()`:**
-1. For each requirement, embeds the query text
-2. Runs **semantic search** (Qdrant) → gets top-k vector matches
-3. Runs **BM25 keyword search** → gets top-k keyword matches
-4. Merges results using **Reciprocal Rank Fusion (RRF)**
-5. Sends top 80 chunks to the **cross-encoder reranker**
-6. **Aggregates per file** (takes max score across chunks from same file)
-7. Stores trace links in Postgres
-
-**Also contains:**
-- `build_trace_matrix()` — assembles the UI response from DB records
-- `_score_to_label()` — maps scores to Implemented/Partial/Missing
-- Project reset/clear functions
-
-**Why it exists:** Separates the retrieval pipeline from the API layer. All the research-critical logic lives here.
+**Why it exists:** Decouples the UI and consumer applications from the core business logic.
 
 ---
 
-### `reranker.py` (164 lines)
+### `persistence.py` ⭐ THE CORE PIPELINE
+
+**What:** Contains the core trace link generation, trace matrix construction, and impact analysis pipelines.
+
+**Key features:**
+1. **`generate_trace_links()`**:
+   - Performs **Query Expansion** for Exception (`E-type`) flows by prepending parent Use Case S-flow text context.
+   - Runs **semantic search** against Qdrant to retrieve vector candidates.
+   - Runs **BM25 keyword search** over code paths and chunks.
+   - Merges candidate lists using **Reciprocal Rank Fusion (RRF)**.
+   - Passes candidates to `reranker.py` for **Cross-Encoder reranking**.
+   - Performs **File-Level Aggregation** by selecting the maximum chunk score for each file.
+   - Saves trace links with calibrated similarity scores.
+2. **`build_trace_matrix()`**:
+   - Collects database records.
+   - Matches generated links against the gold standard CSV (`gold_links_itrust.csv`) using a path lookup helper `_find_gold_csv`.
+   - Runs evaluation metrics calculations (Hit@k, MRR, NDCG@k, MAP, Precision, Recall, F1).
+3. **`build_impact_analysis()`**:
+   - Retrieves all code units and trace links associated with a file path.
+   - Details affected requirements and calculates risk score assessments (Low, Medium, High).
+
+---
+
+### `explainer.py` (RAG Generator)
+
+**What:** RAG (Retrieval-Augmented Generation) pipeline for generating natural language descriptions of trace links.
+
+**How it works:**
+1. Takes matching requirement texts and source code snippets.
+2. Formulates a prompt instructing Gemini to explain why the requirement and code snippet match in 1 or 2 professional sentences.
+3. Queries `gemini-2.5-flash` via the Google GenAI SDK.
+4. Caches the resulting explanation string in the PostgreSQL database (`trace_links_v2`) to eliminate redundant LLM calls.
+
+---
+
+### `github_integration.py`
+
+**What:** Git workspace manager for cloning, pulling, and diffing remote code repositories.
+
+**Key functions:**
+- `clone_or_pull()` — Clones a remote repository or pulls modifications to keep local folders updated.
+- `get_commit_diff()` — Runs `git diff` to extract files changed between two commit SHAs, enabling incremental syncs.
+
+---
+
+### `report_export.py`
+
+**What:** Streams styled documents for CSV and PDF reports.
+
+**How it works:**
+- Creates standard CSV grids using `csv.DictWriter`.
+- Compiles PDF report files using **ReportLab**, applying custom typography, metadata blocks, tables, and color styling.
+
+---
+
+### `reranker.py`
 
 **What:** Cross-encoder reranking using `ms-marco-MiniLM-L-6-v2`.
 
 **How it works:**
-1. Takes requirement text + code chunk pairs
-2. Feeds each pair to the cross-encoder (a BERT model trained for relevance scoring)
-3. Outputs a relevance score per pair
-4. Combines with the original RRF score: `0.4 × CE + 0.6 × RRF`
-
-**Why it exists:** Embedding models rank candidates by general similarity. The cross-encoder does pairwise comparison — it can catch matches that embeddings miss (e.g., "error handling" → `AuthDAO.java`). It's slower but more accurate.
+- Takes query-document pairs, tokenizes them, and feeds them into a BERT-based relevance model.
+- Calibrates embedding similarities with deep cross-attention scores.
 
 ---
 
-### `bm25_index.py` (85 lines)
+### `bm25_index.py`
 
-**What:** Custom BM25 (Best Matching 25) keyword search implementation.
-
-**How it works:**
-1. Tokenizes code content with camelCase/PascalCase splitting (`AuthDAO` → `auth`, `dao`)
-2. Builds inverse document frequency (IDF) for each token
-3. At search time, scores documents by keyword overlap with the query
-
-**Why it exists:** Semantic embeddings miss exact keyword matches. If a requirement says "AuthDAO", BM25 will find `AuthDAO.java` directly — embeddings might not because they encode meaning, not words.
+**What:** Tokenizes code chunks (splitting camelCase/PascalCase structures) and builds a local BM25 inverse document frequency index to capture exact keyword matches.
 
 ---
 
-### `embeddings.py` (309 lines)
+### `embeddings.py`
 
-**What:** Text-to-vector embedding with multiple provider support.
-
-**Providers:**
-- `local` (default) — runs `BAAI/bge-base-en-v1.5` locally via sentence-transformers
-- `huggingface` — calls HF Inference API
-- `gemini` — calls Google's embedding API
-- `hash` — deterministic hash-based vectors (for testing, zero quality)
-
-**Why it exists:** Abstracts away the embedding provider. You can switch between local/API/test modes by changing one env var without touching any pipeline code.
+**What:** Pluggable wrapper for embedding providers. Supports:
+- `local` (SentenceTransformers BAAI/bge-base-en-v1.5)
+- `gemini` (Google Cloud `gemini-embedding-001`)
+- `huggingface` (Inference API)
+- `hash` (Deterministic fake embeddings for quick tests)
 
 ---
 
-### `repo_ingestion.py` (543 lines)
+### `repo_ingestion.py`
 
-**What:** Parses source code repositories into indexable chunks.
-
-**How it works:**
-1. Walks the directory tree, skipping `node_modules`, `.git`, config files, etc.
-2. Uses **Tree-sitter** AST parser to extract functions, classes, and methods
-3. Falls back to regex-based chunking for unsupported languages
-4. Splits large code units into ~1200 char chunks
-5. Embeds each chunk and stores in both Postgres and Qdrant
-
-**Supported languages:** Python, JavaScript, TypeScript, TSX, Java, C, C++, Go, Rust, Ruby, C#
-
-**Why it exists:** Raw source files are too large for embedding models. AST parsing produces meaningful, function-level chunks that embed well.
+**What:** Walks folders, skips ignores, and utilizes **Tree-sitter AST** to parse classes, functions, and methods into structured code units of ~1200 characters.
 
 ---
 
-### `requirements_ingestion.py` (402 lines)
+### `requirements_ingestion.py`
 
-**What:** Parses requirements documents into individual requirement records.
-
-**Supported formats:** PDF, DOCX, TXT, Markdown, CSV
-
-**How it works:**
-1. Extracts raw text from the uploaded file
-2. Splits into individual requirements (by numbered patterns, blank lines, or rows)
-3. Detects embedded keys (e.g., `REQ-001:`) and uses them as IDs
-4. Assigns auto-generated keys (`REQ-001`, `REQ-002`) if none found
-5. Deduplicates against previously ingested requirements
-6. Embeds each requirement and stores in Postgres + Qdrant
-
-**Why it exists:** Requirements come in many formats. This normalizes them all into a uniform `(req_key, text)` structure.
+**What:** Parses and extracts textual requirements from PDF, DOCX, TXT, MD, and CSV files, normalizing requirement keys.
 
 ---
 
-### `vector_store.py` (152 lines)
+### `vector_store.py`
 
-**What:** Qdrant vector database interface.
-
-**Key operations:**
-- `upsert_requirements()` / `upsert_code_units()` — store embeddings with metadata
-- `search_code_units()` — cosine similarity search for a query vector
-- `delete_*()` — cleanup per project
-
-**Why it exists:** Isolates all Qdrant-specific code. If you swap to a different vector DB (Pinecone, Weaviate), you only change this file.
+**What:** Interface wrapper for Qdrant collection creation, payload querying, and deletion operations.
 
 ---
 
-### `storage.py` (84 lines)
+### `storage.py`
 
-**What:** SQLAlchemy ORM models for Postgres.
-
-**Tables:**
-- `requirements_v2` — requirement records (project_id, req_key, text, source_doc)
-- `code_units_v2` — code unit records (file_path, symbol, start_line, content)
-- `trace_links_v2` — trace links (requirement → code_unit, score, rank, label)
-
-**Why it exists:** Defines the relational schema. Qdrant stores vectors for search; Postgres stores structured records for display, joins, and reporting.
+**What:** SQLAlchemy schemas and database configuration models:
+- `ProjectRecord` — Project metadata, commit SHA, counts, and run dates.
+- `RequirementRecord` — Requirement texts and source document paths.
+- `CodeUnitRecord` — Tree-sitter code snippet content, line positions, and symbols.
+- `TraceLinkRecord` — Trace links mapping requirement to code units, scores, ranks, and cached explanation summaries.
+- `AnalysisRunRecord` — Analysis execution histories, timings, and diff lists.
 
 ---
 
-### `settings.py` (35 lines)
+## Frontend — `frontend/src/`
 
-**What:** Pydantic settings model that reads `.env` configuration.
+### `src/app/page.tsx`
 
-**Why it exists:** Single source of truth for all config values. Every module imports from here instead of reading env vars directly.
+**What:** TraceAI Single-Page Dashboard. Handles:
+- UI forms for uploading requirements, registering directories, and triggering runs.
+- Rendering summary cards (Completion %, Coverage %, MRR, Hit@k).
+- Displaying interactive trace link rows, color-coded by confidence.
+- Displaying trace details modals showing code snippets and loading lazy RAG explanations on click.
+- Impact analysis tab displaying risk levels of modified files.
 
----
+### `src/lib/tracing.ts`
 
-### `evaluation.py` (358 lines)
-
-**What:** Computes information retrieval metrics against a gold standard.
-
-**Metrics computed:**
-- Precision@k, Recall@k, F1@k
-- nDCG@k (normalized discounted cumulative gain)
-- Hit@k (did we find ≥1 correct file?)
-- MRR (mean reciprocal rank)
-- MAP (mean average precision)
-
-**Why it exists:** This is how we measure if the system actually works. Without evaluation, we're guessing.
-
----
-
-## Scripts — `scripts/`
-
-### `run_api.py` (19 lines)
-
-**What:** Starts the FastAPI server with uvicorn + hot-reload.
-
-**Why it exists:** Convenience entry point. `python3 scripts/run_api.py` is cleaner than remembering the uvicorn command.
-
----
-
-### `run_benchmark.py` (340 lines)
-
-**What:** End-to-end iTrust benchmark runner.
-
-**Steps:**
-1. Converts iTrust raw data into TraceAI format (requirements CSV + gold links CSV)
-2. Uploads requirements via the API
-3. Ingests the iTrust Java code repository
-4. Generates trace links
-5. Runs evaluation against the gold standard
-6. Prints formatted results table
-
-**Why it exists:** One command to reproduce all benchmark numbers: `python3 scripts/run_benchmark.py`
-
----
-
-### `generate_charts.py` (257 lines)
-
-**What:** Generates matplotlib charts from evaluation results.
-
-**Charts produced:**
-- Aggregate metrics bar chart
-- Per-requirement F1 horizontal bars
-- Hit/miss pie chart
-- Recall distribution histogram
-- Precision vs recall scatter
-- MRR by gold link count
-
-**Why it exists:** Visual evidence for the research report.
-
----
-
-## Frontend — `frontend/src/app/`
-
-### `page.tsx` (667 lines)
-
-**What:** The entire UI in a single React component.
-
-**Sections:**
-1. **Input form** — project ID, file upload, repo path
-2. **Stats cards** — requirements count, code units, trace links, implementation %, avg score
-3. **Trace matrix table** — rows with requirement, best match, score, status
-4. **Detail modal** — click a row to see matched code + all ranked links
-
-**Why single file:** It's a focused tool, not a multi-page app. One file keeps it simple.
-
----
-
-### `layout.tsx` (~30 lines)
-
-**What:** Root layout with Inter font + metadata.
-
----
-
-### `globals.css` (~200 lines)
-
-**What:** CSS custom properties (design tokens) + base styles. Dark theme with HSL color tokens.
-
----
-
-## Config Files
-
-| File | Purpose |
-|------|---------|
-| `.env.example` | Template for environment variables |
-| `requirements.txt` | Python dependencies |
-| `infra/docker-compose.yml` | Postgres + Qdrant containers |
-| `.gitignore` | Git exclusion rules |
+**What:** Core client utility and mathematical clamping calculations.
+- Clamps BM25/RRF scores into the `[0.0, 1.0]` cosine similarity bounds.
+- Synchronizes status thresholds (`IMPLEMENTED = 0.50`, `PARTIAL = 0.38`).
+- Computes confidence buckets (`STRONG = 0.65`, `MODERATE = 0.50`, `WEAK = 0.30`).
+- Computes mean score values and aggregates coverage counts for charts.
 
 ---
 
 ## Data Flow Summary
 
 ```
-Requirements Doc → requirements_ingestion.py → Postgres + Qdrant (vectors)
-Code Repository  → repo_ingestion.py         → Postgres + Qdrant (vectors)
-                                                        │
-                                              persistence.py (search_and_trace)
-                                                        │
-                                    ┌───────────────────┼──────────────────┐
-                                    ▼                   ▼                  ▼
-                              Semantic Search    BM25 Keyword       Query Expansion
-                              (Qdrant)          (bm25_index.py)    (E-type flows)
-                                    │                   │
-                                    └─────────┬─────────┘
-                                              ▼
-                                    RRF Merge (top 80 chunks)
-                                              │
-                                              ▼
-                                    Cross-Encoder Reranker
-                                    (reranker.py)
-                                              │
-                                              ▼
-                                    File-Level Aggregation
-                                    (max score per file)
-                                              │
-                                              ▼
-                                    Trace Links → Postgres
-                                              │
-                                              ▼
-                                    Trace Matrix → API → UI
+Code Ingest (Tree-sitter) ──► Qdrant Vectors + Postgres Records
+Requirements Ingest       ──► Qdrant Vectors + Postgres Records
+                                     │
+                                     ▼
+                            persistence.py (RRF Hybrid Search)
+                                     │
+                                     ▼
+                            Rerank (ms-marco) & Aggregation
+                                     │
+                                     ▼
+                           Trace Links Generated
+                                     │
+                 ┌───────────────────┴───────────────────┐
+                 ▼                                       ▼
+    Impact Analysis (Risk evaluation)       RAG explanations (Gemini)
+                 │                                       │
+                 ▼                                       ▼
+          Frontend Dashboard ◄───────────────────────────┘
 ```

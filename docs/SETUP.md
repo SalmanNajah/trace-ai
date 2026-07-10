@@ -42,12 +42,13 @@ cp .env.example .env
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `TRACEAI_DATABASE_URL` | Yes | `postgresql+psycopg://traceai:traceai@localhost:5434/traceai` | Postgres connection |
-| `TRACEAI_QDRANT_URL` | Yes | `http://localhost:6333` | Qdrant vector DB |
-| `TRACEAI_VECTOR_SIZE` | No | `768` | Embedding dimensions |
+| `TRACEAI_DATABASE_URL` | Yes | `postgresql+psycopg://traceai:traceai@localhost:5434/traceai` | Postgres connection string |
+| `TRACEAI_QDRANT_URL` | Yes | `http://localhost:6333` | Qdrant vector database URL |
+| `TRACEAI_VECTOR_SIZE` | No | `768` | Embedding dimensions (768 for BAAI, 768 for Gemini) |
 | `TRACEAI_EMBEDDING_PROVIDER` | No | `local` | `local`, `huggingface`, `gemini`, or `hash` |
 | `HF_TOKEN` | If provider=huggingface | — | HuggingFace API token |
-| `GEMINI_API_KEY` | If provider=gemini | — | Google AI Studio key |
+| `GEMINI_API_KEY` | If provider=gemini or using Explainer | — | Google AI Studio Key (Required for explanations and Gemini embeddings) |
+| `TRACEAI_EXPLAINER_MODEL` | No | `gemini-2.5-flash` | Gemini model used to generate trace explanations |
 
 ### Start
 
@@ -77,11 +78,14 @@ npm run dev
 
 ## 4. Using the UI
 
-1. Enter a **Project ID** (e.g., `my-project`)
-2. Upload a **Requirements Document** (PDF, DOCX, TXT, or MD)
-3. Enter the **Code Repository** local path
-4. Click **Analyze Traceability**
-5. Click any row to see matched code and all trace links
+1. Enter a **Project ID** (e.g., `my-project`).
+2. Upload a **Requirements Document** (PDF, DOCX, TXT, or MD).
+3. Enter the **Code Repository** local path.
+4. Click **Analyze Traceability**.
+5. View the Traceability Matrix showing implementation status and confidence.
+6. Click any row to expand details, see matching code units, and lazily load natural language trace explanations.
+7. Click **Export Report** to download the analysis as a PDF or CSV file.
+8. When files change, inspect the **Impact Analysis** tab to check risk and blast radius.
 
 ---
 
@@ -89,55 +93,54 @@ npm run dev
 
 Base URL: `http://localhost:8100`
 
+### Projects
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET`  | `/api/projects` | List all projects |
+| `POST` | `/api/projects` | Create a new project |
+| `PATCH`| `/api/projects/{project_id}` | Update project metadata |
+| `DELETE`| `/api/projects` | Reset and remove all project structures |
+| `POST` | `/api/projects/{project_id}/reset` | Reset project analysis records, links, and vectors |
+| `POST` | `/api/projects/{project_id}/sync` | Clone or pull code from GitHub and sync changes incrementally |
+
 ### Requirements
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `POST` | `/api/projects/{id}/requirements/upload` | Upload requirements file (multipart) |
-| `GET` | `/api/projects/{id}/requirements` | List all requirements |
+| `POST` | `/api/projects/{project_id}/requirements/upload` | Upload requirements document (multipart/form-data) |
+| `GET`  | `/api/projects/{project_id}/requirements` | List requirements in the database |
 
-### Code
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/api/projects/{id}/repo/ingest` | Parse repository (`{"repo_path": "/path"}`) |
-| `GET` | `/api/projects/{id}/code-units?limit=100` | List code units |
-
-### Traceability
+### Code Units
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `POST` | `/api/projects/{id}/trace-links/generate` | Generate trace links |
-| `GET` | `/api/projects/{id}/trace-matrix` | Full trace matrix |
+| `POST` | `/api/projects/{project_id}/repo/ingest` | Process AST code chunks from repo path (`{"repo_path": "/path"}`) |
+| `GET`  | `/api/projects/{project_id}/code-units` | List processed code units |
+| `GET`  | `/api/projects/{project_id}/vector-stats` | Get collection statistics from Qdrant |
 
-### Utilities
+### Trace Links & Runs
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `GET` | `/api/projects/{id}/vector-stats` | Vector store statistics |
-| `POST` | `/api/projects/{id}/reset` | Reset all project data |
+| `POST` | `/api/projects/{project_id}/trace-links/generate` | Generate trace links using hybrid RRF |
+| `GET`  | `/api/projects/{project_id}/trace-matrix` | Retrieve the structured trace matrix (including gold standard evaluation if present) |
+| `GET`  | `/api/projects/{project_id}/runs` | List execution history and analysis runs |
 
-### CLI Example
+### Explanations, Impacts & Exports
 
-```bash
-# Full flow via curl
-curl -X POST http://localhost:8100/api/projects/my-project/requirements/upload \
-  -F "file=@requirements.txt"
-
-curl -X POST http://localhost:8100/api/projects/my-project/repo/ingest \
-  -H "Content-Type: application/json" \
-  -d '{"repo_path": "/path/to/repo"}'
-
-curl -X POST http://localhost:8100/api/projects/my-project/trace-links/generate
-
-curl -s http://localhost:8100/api/projects/my-project/trace-matrix | python3 -m json.tool
-```
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET`  | `/api/projects/{project_id}/runs/{run_id}/requirements/{req_id}/explanation` | Fetch or generate RAG explanation for trace link |
+| `GET`  | `/api/projects/{project_id}/runs/{run_id}/export/csv` | Download project run metrics as CSV |
+| `GET`  | `/api/projects/{project_id}/runs/{run_id}/export/pdf` | Download project run metrics as PDF |
+| `GET`  | `/api/projects/{project_id}/impact` | Analyze code file impact score and affected requirements |
 
 ---
 
 ## 6. Embedding Providers
 
-Edit `.env` to switch providers:
+Edit `.env` to switch embedding providers:
 
 ```bash
 # Local (default, free, no API key needed)
@@ -150,12 +153,7 @@ HF_TOKEN=your_token_here
 # Google Gemini
 TRACEAI_EMBEDDING_PROVIDER=gemini
 GEMINI_API_KEY=your_key_here
-
-# Hash fallback (offline, low quality, for testing only)
-TRACEAI_EMBEDDING_PROVIDER=hash
 ```
-
-After switching: restart the API, reset the project, and re-ingest everything.
 
 ---
 
@@ -164,8 +162,9 @@ After switching: restart the API, reset the project, and re-ingest everything.
 | Problem | Solution |
 |---------|----------|
 | `401 Unauthorized` from HF | Get a free token from https://huggingface.co/settings/tokens |
-| `429 RESOURCE_EXHAUSTED` from Gemini | Wait 60s, or switch to `local` provider |
-| CORS errors in browser | Ensure backend runs on port 8100 |
-| `Dimension mismatch` | Reset project — collections auto-recreate |
-| Slow code parsing | Normal for large repos — watch elapsed timer |
-| `No route to host` | Check Docker is running: `docker compose -f infra/docker-compose.yml ps` |
+| `429 RESOURCE_EXHAUSTED` | Check Gemini limits, or switch to the `local` provider |
+| CORS errors in browser | Ensure the backend runs on port 8100 |
+| `Dimension mismatch` | Reset the project — collections will automatically re-create with the correct size |
+| `Gemini explainer unavailable` | Check that `GEMINI_API_KEY` is correctly defined in `.env` |
+| Slow code parsing | Tree-sitter handles parsing sequentially. Large projects may take longer on initial runs |
+| DB connection issues | Verify that docker compose is active: `docker compose -f infra/docker-compose.yml ps` |

@@ -1,67 +1,19 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-
-type TraceLink = {
-  code_unit_id: string;
-  code_key: string;
-  score: number;
-  rank: number;
-  label: "Implemented" | "Partial" | "Missing";
-  explanation: string;
-  file_path: string;
-  symbol: string;
-  start_line: number;
-  end_line: number;
-  content: string;
-};
-
-type ProjectInfo = {
-  project_id: string;
-  name: string;
-  description: string;
-  repo_type: string;
-  repo_path: string;
-  github_url: string;
-  branch: string;
-  last_commit_sha: string;
-  requirements_count: number;
-  code_units_count: number;
-  trace_links_count: number;
-  created_at: string | null;
-  last_run: string | null;
-};
-
-type TraceMatrixRow = {
-  requirement_id: string;
-  req_key: string;
-  text: string;
-  best_label: "Implemented" | "Partial" | "Missing";
-  best_score: number;
-  links: TraceLink[];
-};
-
-type TraceMatrixResponse = {
-  project_id: string;
-  requirements_total: number;
-  requirements_linked: number;
-  requirements_implemented: number;
-  completion_percentage: number;
-  coverage_percentage: number;
-  rows: TraceMatrixRow[];
-};
-
-type AnalysisRun = {
-  id: number;
-  project_id: string;
-  commit_sha: string | null;
-  changed_files: string | null;
-  requirements_count: number;
-  code_units_count: number;
-  trace_links_count: number;
-  execution_time_seconds: number;
-  created_at: string;
-};
+import {
+  type ProjectInfo,
+  type TraceMatrixRow,
+  type TraceMatrixResponse,
+  type AnalysisRun,
+  type TraceLabel,
+  clampScore,
+  formatScore,
+  computeAvgScore,
+  computeQualityBuckets,
+  computeCoverageCounts,
+  QUALITY_THRESHOLDS,
+} from "@/lib/tracing";
 
 type PipelineStep = "idle" | "resetting" | "uploading" | "ingesting" | "generating" | "done" | "error";
 
@@ -589,18 +541,33 @@ export default function Home() {
             value={linkCount || activeProject?.trace_links_count || 0}
             info={`Requirement-to-code links generated (${reqCount || traceMatrix?.requirements_total || 0} × top-10).`}
           />
+          {traceMatrix?.evaluation ? (
+            <StatCard
+              label="Model Accuracy"
+              value={`${traceMatrix.evaluation.hit_at_k.toFixed(1)}%`}
+              highlight
+              info="Percentage of requirements with at least one correct match in the top 10 (Hit@10)."
+            />
+          ) : (
+            <StatCard
+              label="Trace Links"
+              value={linkCount || activeProject?.trace_links_count || 0}
+              info={`Requirement-to-code links generated (${reqCount || traceMatrix?.requirements_total || 0} × top-10).`}
+            />
+          )}
           <StatCard
-            label="Implemented"
+            label={traceMatrix?.evaluation ? "Estimated Coverage" : "Estimated Coverage"}
             value={traceMatrix ? `${traceMatrix.completion_percentage.toFixed(1)}%` : "–"}
-            highlight
-            info="Requirements with strong semantic match (similarity ≥ 0.50)."
+            highlight={!traceMatrix?.evaluation}
+            info={traceMatrix?.evaluation
+              ? "Confidence-based percentage of requirements with at least one predicted match above threshold."
+              : `Requirements with estimated strong semantic match (similarity ≥ ${QUALITY_THRESHOLDS.MODERATE}).`
+            }
           />
           <StatCard
             label="Avg Score"
-            value={traceMatrix && traceMatrix.rows.length > 0
-              ? (traceMatrix.rows.reduce((s, r) => s + r.best_score, 0) / traceMatrix.rows.length).toFixed(3)
-              : "–"}
-            info="Mean best-match cosine similarity. 0.50+ is strong, 0.65+ is excellent."
+            value={traceMatrix ? computeAvgScore(traceMatrix.rows) : "–"}
+            info={`Mean best-match cosine similarity. ${QUALITY_THRESHOLDS.MODERATE}+ is strong, ${QUALITY_THRESHOLDS.STRONG}+ is excellent.`}
           />
         </div>
       )}
@@ -652,22 +619,28 @@ export default function Home() {
                       </div>
                     </td>
                     <td className="px-4 py-3 text-xs">
-                      {row.links.length > 0 ? (
-                        <div className="font-mono text-foreground-muted">
-                          {row.links[0].file_path.split("/").pop()}
-                          <span className="text-foreground-subtle">
-                            :{row.links[0].start_line}
-                          </span>
-                        </div>
-                      ) : (
-                        <span className="text-foreground-subtle">—</span>
-                      )}
+                      {(() => {
+                        const displayLinks = row.has_gold ? row.links.filter(l => l.is_correct) : row.links;
+                        return displayLinks.length > 0 ? (
+                          <div className="font-mono text-foreground-muted">
+                            {displayLinks[0].file_path.split("/").pop()}
+                            <span className="text-foreground-subtle">
+                              :{displayLinks[0].start_line}
+                            </span>
+                          </div>
+                        ) : (
+                          <span className="text-foreground-subtle">—</span>
+                        );
+                      })()}
                     </td>
                     <td className="px-4 py-3 text-right tabular-nums text-foreground-muted">
-                      {row.best_score > 0 ? row.best_score.toFixed(3) : "—"}
+                      {(() => {
+                        const displayLinks = row.has_gold ? row.links.filter(l => l.is_correct) : row.links;
+                        return displayLinks.length > 0 ? formatScore(displayLinks[0].score) : "—";
+                      })()}
                     </td>
                     <td className="px-4 py-3">
-                      <StatusPill label={row.best_label} />
+                      <StatusPill label={row.is_correct_match ? "Implemented" : "Missing"} isBenchmark={row.has_gold} />
                     </td>
                   </tr>
                 ))}
@@ -1087,7 +1060,9 @@ function DetailModal({
   onClose: () => void;
 }) {
   const backdropRef = useRef<HTMLDivElement>(null);
-  const bestLink = row.links[0] || null;
+  const isBenchmark = !!row.has_gold;
+  const filteredLinks = isBenchmark ? row.links.filter(link => link.is_correct) : row.links;
+  const bestLink = filteredLinks[0] || null;
   const [explanation, setExplanation] = useState<string>(bestLink?.explanation || "");
   const needsFetch = !!bestLink && (!bestLink.explanation || bestLink.explanation.startsWith("Semantic match between requirement"));
   const [loadingExp, setLoadingExp] = useState<boolean>(needsFetch);
@@ -1120,7 +1095,7 @@ function DetailModal({
     }
   }, [bestLink, projectId, runId, row.requirement_id, needsFetch]);
 
-  const implPercent = Math.round(row.best_score * 100);
+  const implPercent = Math.round(clampScore(row.best_score) * 100);
   const progressColor =
     row.best_label === "Implemented"
       ? "bg-emerald-400"
@@ -1153,7 +1128,7 @@ function DetailModal({
         <div className="px-6 py-3 border-b border-border-subtle">
           <div className="flex items-center justify-between text-xs text-foreground-subtle mb-1.5">
             <span>Implementation Confidence</span>
-            <span className="tabular-nums">{row.best_score.toFixed(3)}</span>
+            <span className="tabular-nums">{formatScore(row.best_score)}</span>
           </div>
           <div className="h-2 w-full rounded-full bg-surface-raised overflow-hidden">
             <div
@@ -1217,13 +1192,13 @@ function DetailModal({
             </div>
           )}
 
-          {row.links.length > 1 && (
+          {filteredLinks.length > 1 && (
             <div className="border-t border-border-subtle px-6 py-4">
               <div className="text-[10px] font-medium uppercase tracking-wider text-foreground-subtle/70 mb-3">
-                All Matched Code ({row.links.length} links)
+                {isBenchmark ? `All Verified Code (${filteredLinks.length} links)` : `All Matched Code (${filteredLinks.length} links)`}
               </div>
               <div className="space-y-1">
-                {row.links.map((link, i) => (
+                {filteredLinks.map((link, i) => (
                   <div
                     key={link.code_unit_id}
                     className="flex items-center justify-between rounded-lg px-3 py-2 text-xs transition-colors hover:bg-surface-raised/60"
@@ -1240,9 +1215,9 @@ function DetailModal({
                     </div>
                     <div className="flex items-center gap-3">
                       <span className="tabular-nums text-foreground-muted">
-                        {link.score.toFixed(3)}
+                        {formatScore(link.score)}
                       </span>
-                      <StatusPill label={link.label as "Implemented" | "Partial" | "Missing"} />
+                      <StatusPill label={link.label as TraceLabel} />
                     </div>
                   </div>
                 ))}
@@ -1255,14 +1230,27 @@ function DetailModal({
   );
 }
 
-function StatusPill({ label }: { label: "Implemented" | "Partial" | "Missing" }) {
-  const cls =
-    label === "Implemented"
-      ? "bg-emerald-500/15 text-emerald-300"
-      : label === "Partial"
-        ? "bg-amber-500/15 text-amber-300"
-        : "bg-red-500/15 text-red-300";
-  return <span className={`rounded px-2 py-0.5 text-xs font-medium ${cls}`}>{label}</span>;
+function StatusPill({ label, isBenchmark }: { label: string; isBenchmark?: boolean }) {
+  let displayLabel = label;
+  let cls = "";
+  
+  if (isBenchmark) {
+    if (label === "Implemented") {
+      displayLabel = "Hit";
+      cls = "bg-emerald-500/15 text-emerald-300";
+    } else {
+      displayLabel = "Miss";
+      cls = "bg-red-500/15 text-red-300";
+    }
+  } else {
+    cls =
+      label === "Implemented"
+        ? "bg-emerald-500/15 text-emerald-300"
+        : label === "Partial"
+          ? "bg-amber-500/15 text-amber-300"
+          : "bg-red-500/15 text-red-300";
+  }
+  return <span className={`rounded px-2 py-0.5 text-xs font-medium ${cls}`}>{displayLabel}</span>;
 }
 
 function FieldLabel({ label, children }: { label: string; children: React.ReactNode }) {
@@ -1351,22 +1339,110 @@ function SimpleHighlight({ code }: { code: string }) {
 function CoverageDashboard({ matrix }: { matrix: TraceMatrixResponse }) {
   const total = matrix.requirements_total;
   const rows = matrix.rows || [];
+  const evalData = matrix.evaluation;
 
-  const implemented = rows.filter((r) => r.best_label === "Implemented").length;
-  const partial = rows.filter((r) => r.best_label === "Partial").length;
-  const missing = rows.filter((r) => r.best_label === "Missing").length;
+  if (evalData) {
+    // Benchmark Mode: Calculate metrics based on gold-annotated requirements only
+    const totalEvaluated = rows.filter(r => r.has_gold).length;
+    const hits = rows.filter(r => r.is_correct_match).length;
+    const misses = totalEvaluated - hits;
+    const unevaluated = total - totalEvaluated;
+    
+    const pctHits = totalEvaluated > 0 ? (hits / totalEvaluated) * 100 : 0;
+    const pctMisses = totalEvaluated > 0 ? (misses / totalEvaluated) * 100 : 0;
+
+    return (
+      <div className="grid gap-6 md:grid-cols-2 rounded-2xl border border-border-subtle bg-surface p-6 mb-6">
+        {/* Left Column: Traceability Health Bar */}
+        <div className="flex flex-col justify-center space-y-4">
+          <div>
+            <h4 className="text-sm font-semibold text-foreground mb-1">Benchmark Model Accuracy</h4>
+            <p className="text-xs text-foreground-subtle">Ground-truth verification against {totalEvaluated} gold-annotated requirements ({unevaluated} unlabeled/skipped).</p>
+          </div>
+
+          {/* Stacked Progress Bar */}
+          <div className="h-4 w-full rounded-full bg-surface-raised flex overflow-hidden border border-border-subtle">
+            {pctHits > 0 && (
+              <div
+                style={{ width: `${pctHits}%` }}
+                className="h-full bg-emerald-500 transition-all duration-500 hover:brightness-110"
+                title={`Hits: ${hits} (${pctHits.toFixed(1)}%)`}
+              />
+            )}
+            {pctMisses > 0 && (
+              <div
+                style={{ width: `${pctMisses}%` }}
+                className="h-full bg-red-500 transition-all duration-500 hover:brightness-110"
+                title={`Misses: ${misses} (${pctMisses.toFixed(1)}%)`}
+              />
+            )}
+          </div>
+
+          {/* Legend */}
+          <div className="grid grid-cols-3 gap-2 text-xs">
+            <div className="flex flex-col gap-0.5 rounded-lg bg-emerald-500/5 border border-emerald-500/10 p-2.5">
+              <span className="text-[10px] font-bold text-emerald-400 uppercase tracking-wider">Gold Hits</span>
+              <span className="text-base font-serif font-bold text-foreground">{hits}</span>
+              <span className="text-[10px] text-foreground-subtle">{pctHits.toFixed(1)}% of evaluated</span>
+            </div>
+            <div className="flex flex-col gap-0.5 rounded-lg bg-red-500/5 border border-red-500/10 p-2.5">
+              <span className="text-[10px] font-bold text-red-400 uppercase tracking-wider">Misses</span>
+              <span className="text-base font-serif font-bold text-foreground">{misses}</span>
+              <span className="text-[10px] text-foreground-subtle">{pctMisses.toFixed(1)}% of evaluated</span>
+            </div>
+            <div className="flex flex-col gap-0.5 rounded-lg bg-blue-500/5 border border-blue-500/10 p-2.5">
+              <span className="text-[10px] font-bold text-blue-400 uppercase tracking-wider">Self-Confidence</span>
+              <span className="text-base font-serif font-bold text-foreground">{matrix.requirements_implemented}</span>
+              <span className="text-[10px] text-foreground-subtle">{matrix.completion_percentage.toFixed(1)}% estimated</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Right Column: Benchmark Metrics Breakdown */}
+        <div className="flex flex-col justify-center space-y-4">
+          <div>
+            <h4 className="text-sm font-semibold text-foreground mb-1">Retrieval Metrics Breakdown</h4>
+            <p className="text-xs text-foreground-subtle">Standard evaluation measures of model ranking and recall.</p>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3 text-xs">
+            <div className="rounded-xl border border-border-subtle bg-surface-raised p-3">
+              <div className="text-[10px] font-bold text-foreground-muted uppercase tracking-wider">MRR</div>
+              <div className="text-lg font-serif font-bold text-foreground tabular-nums">{evalData.mrr.toFixed(3)}</div>
+              <div className="text-[9px] text-foreground-subtle mt-0.5">Mean Reciprocal Rank</div>
+            </div>
+            <div className="rounded-xl border border-border-subtle bg-surface-raised p-3">
+              <div className="text-[10px] font-bold text-foreground-muted uppercase tracking-wider">nDCG@10</div>
+              <div className="text-lg font-serif font-bold text-foreground tabular-nums">{evalData.ndcg_at_k.toFixed(3)}</div>
+              <div className="text-[9px] text-foreground-subtle mt-0.5">Normalized Discounted Cumulative Gain</div>
+            </div>
+            <div className="rounded-xl border border-border-subtle bg-surface-raised p-3">
+              <div className="text-[10px] font-bold text-foreground-muted uppercase tracking-wider">MAP</div>
+              <div className="text-lg font-serif font-bold text-foreground tabular-nums">{evalData.map_score.toFixed(3)}</div>
+              <div className="text-[9px] text-foreground-subtle mt-0.5">Mean Average Precision</div>
+            </div>
+            <div className="rounded-xl border border-border-subtle bg-surface-raised p-3">
+              <div className="text-[10px] font-bold text-foreground-muted uppercase tracking-wider">Precision / Recall</div>
+              <div className="text-lg font-serif font-bold text-foreground tabular-nums">
+                {evalData.precision_at_k.toFixed(3)} / {evalData.recall_at_k.toFixed(3)}
+              </div>
+              <div className="text-[9px] text-foreground-subtle mt-0.5">P@10 / R@10 ratio</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Fallback Confidence mode (No gold standard)
+  const { implemented, partial, missing } = computeCoverageCounts(rows);
 
   const pctImpl = total > 0 ? (implemented / total) * 100 : 0;
   const pctPart = total > 0 ? (partial / total) * 100 : 0;
   const pctMiss = total > 0 ? (missing / total) * 100 : 0;
 
-  // Buckets calculation
-  const highCertainty = rows.filter((r) => r.best_score >= 0.65).length;
-  const mediumCertainty = rows.filter((r) => r.best_score >= 0.50 && r.best_score < 0.65).length;
-  const lowCertainty = rows.filter((r) => r.best_score >= 0.30 && r.best_score < 0.50).length;
-  const unlinked = rows.filter((r) => r.best_score < 0.30 || r.best_label === "Missing").length;
-
-  const maxCount = Math.max(highCertainty, mediumCertainty, lowCertainty, unlinked, 1);
+  const { strongMatch, moderateMatch, weakMatch, noMatch } = computeQualityBuckets(rows);
+  const maxCount = Math.max(strongMatch, moderateMatch, weakMatch, noMatch, 1);
 
   return (
     <div className="grid gap-6 md:grid-cols-2 rounded-2xl border border-border-subtle bg-surface p-6 mb-6">
@@ -1434,60 +1510,54 @@ function CoverageDashboard({ matrix }: { matrix: TraceMatrixResponse }) {
           <div className="flex items-center gap-3 text-xs">
             <div className="w-32 text-foreground-muted shrink-0 flex items-center gap-1.5">
               <span className="h-2 w-2 rounded-full bg-emerald-500" />
-              <span>Strong Match (≥ 0.65)</span>
+              <span>Strong Match (≥ {QUALITY_THRESHOLDS.STRONG})</span>
             </div>
             <div className="h-3 flex-1 rounded bg-surface-raised overflow-hidden">
               <div
-                style={{ width: `${(highCertainty / maxCount) * 100}%` }}
+                style={{ width: `${(strongMatch / maxCount) * 100}%` }}
                 className="h-full bg-emerald-500/80 transition-all duration-500"
               />
             </div>
-            <span className="w-6 text-right font-medium text-foreground tabular-nums">{highCertainty}</span>
+            <span className="w-6 text-right font-medium text-foreground tabular-nums">{strongMatch}</span>
           </div>
-
-          {/* Medium Certainty */}
           <div className="flex items-center gap-3 text-xs">
             <div className="w-32 text-foreground-muted shrink-0 flex items-center gap-1.5">
               <span className="h-2 w-2 rounded-full bg-blue-500" />
-              <span>Moderate (0.50 – 0.65)</span>
+              <span>Moderate ({QUALITY_THRESHOLDS.MODERATE} – {QUALITY_THRESHOLDS.STRONG})</span>
             </div>
             <div className="h-3 flex-1 rounded bg-surface-raised overflow-hidden">
               <div
-                style={{ width: `${(mediumCertainty / maxCount) * 100}%` }}
+                style={{ width: `${(moderateMatch / maxCount) * 100}%` }}
                 className="h-full bg-blue-500/80 transition-all duration-500"
               />
             </div>
-            <span className="w-6 text-right font-medium text-foreground tabular-nums">{mediumCertainty}</span>
+            <span className="w-6 text-right font-medium text-foreground tabular-nums">{moderateMatch}</span>
           </div>
-
-          {/* Low Certainty */}
           <div className="flex items-center gap-3 text-xs">
             <div className="w-32 text-foreground-muted shrink-0 flex items-center gap-1.5">
               <span className="h-2 w-2 rounded-full bg-amber-500" />
-              <span>Weak Match (0.30 – 0.50)</span>
+              <span>Weak Match ({QUALITY_THRESHOLDS.WEAK} – {QUALITY_THRESHOLDS.MODERATE})</span>
             </div>
             <div className="h-3 flex-1 rounded bg-surface-raised overflow-hidden">
               <div
-                style={{ width: `${(lowCertainty / maxCount) * 100}%` }}
+                style={{ width: `${(weakMatch / maxCount) * 100}%` }}
                 className="h-full bg-amber-500/80 transition-all duration-500"
               />
             </div>
-            <span className="w-6 text-right font-medium text-foreground tabular-nums">{lowCertainty}</span>
+            <span className="w-6 text-right font-medium text-foreground tabular-nums">{weakMatch}</span>
           </div>
-
-          {/* Unlinked */}
           <div className="flex items-center gap-3 text-xs">
             <div className="w-32 text-foreground-muted shrink-0 flex items-center gap-1.5">
               <span className="h-2 w-2 rounded-full bg-red-500" />
-              <span>No Match (&lt; 0.30)</span>
+              <span>No Match (&lt; {QUALITY_THRESHOLDS.WEAK})</span>
             </div>
             <div className="h-3 flex-1 rounded bg-surface-raised overflow-hidden">
               <div
-                style={{ width: `${(unlinked / maxCount) * 100}%` }}
+                style={{ width: `${(noMatch / maxCount) * 100}%` }}
                 className="h-full bg-red-500/80 transition-all duration-500"
               />
             </div>
-            <span className="w-6 text-right font-medium text-foreground tabular-nums">{unlinked}</span>
+            <span className="w-6 text-right font-medium text-foreground tabular-nums">{noMatch}</span>
           </div>
         </div>
       </div>
@@ -1622,10 +1692,10 @@ function ImpactAnalysisSection({
                         {req.text}
                       </td>
                       <td className="px-3 py-2 text-right tabular-nums text-foreground-muted">
-                        {req.score.toFixed(3)}
+                        {formatScore(req.score)}
                       </td>
                       <td className="px-3 py-2">
-                        <StatusPill label={req.label as "Implemented" | "Partial" | "Missing"} />
+                        <StatusPill label={req.label as TraceLabel} />
                       </td>
                     </tr>
                   ))}

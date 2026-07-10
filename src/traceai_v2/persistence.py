@@ -251,12 +251,15 @@ def generate_trace_links(
         candidates = []
         for cid in all_candidate_ids:
             base = semantic_map.get(cid, bm25_map.get(cid, {}))
-            orig_score = base.get("score", 0)  # original embedding similarity (0-1)
+            # Only use semantic score (cosine similarity, 0-1) for embed_score.
+            # BM25 scores are unbounded and must NOT be used as embed_score.
+            semantic_entry = semantic_map.get(cid)
+            orig_score = float(semantic_entry["score"]) if semantic_entry else 0.0
             candidates.append({
                 **base,
                 "id": cid,
                 "score": rrf_scores.get(cid, 0),  # RRF for ranking
-                "embed_score": orig_score,          # original for display/labeling
+                "embed_score": orig_score,          # cosine similarity (0-1)
             })
         candidates.sort(key=lambda x: x["score"], reverse=True)
 
@@ -318,6 +321,7 @@ def generate_trace_links(
             # The reranker only changes ordering, not confidence
             score_val = candidate.get("embed_score")
             display_score = float(score_val) if score_val is not None else float(candidate["score"])
+            display_score = min(display_score, 1.0)  # clamp to 0-1 (BM25/RRF scores are unbounded)
             label = _score_to_label(display_score)
             # Only store links with meaningful confidence (Partial or Implemented)
             if label == "Missing":
@@ -353,7 +357,33 @@ def generate_trace_links(
     )
 
 
+def _find_gold_csv(project_id: str) -> Path | None:
+    from pathlib import Path
+    base_dir = Path("/Users/salmannajah/Developer/major-project/trace-ai")
+    
+    # 1. Check benchmark datasets
+    if project_id in ("itrust-benchmark", "itrust-perf-benchmark"):
+        path = base_dir / "data" / "benchmarks" / "iTrust" / "gold_links_itrust.csv"
+        if path.exists():
+            return path
+
+    # 2. Check standard folders
+    for relative_path in [
+        f"docs/gold_links_{project_id}.csv",
+        f"data/gold_links_{project_id}.csv",
+        f"gold_links_{project_id}.csv",
+    ]:
+        path = base_dir / relative_path
+        if path.exists():
+            return path
+            
+    return None
+
+
 def build_trace_matrix(*, session: Session, project_id: str, run_id: int | None = None) -> dict[str, object]:
+    from pathlib import Path
+    import csv
+    
     requirements = session.scalars(
         select(RequirementRecord)
         .where(RequirementRecord.project_id == project_id)
@@ -392,6 +422,62 @@ def build_trace_matrix(*, session: Session, project_id: str, run_id: int | None 
     ).all()
     code_index = {item.code_unit_id: item for item in code_units}
 
+    # Locate gold standard links for the project
+    gold_csv = _find_gold_csv(project_id)
+    evaluation_data = None
+    gold_by_req: dict[str, set[str]] = {}
+    
+    if gold_csv:
+        try:
+            from traceai_v2.evaluation import evaluate, GoldLink, PredictedLink
+            
+            # Load gold links
+            gold_links = []
+            with gold_csv.open("r", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    gold_links.append(GoldLink(
+                        req_key=row["req_key"],
+                        code_key=row["code_identifier"].strip(),
+                        relevance=float(row.get("relevance", "1.0")),
+                    ))
+            
+            for g in gold_links:
+                gold_by_req.setdefault(g.req_key, set()).add(g.code_key)
+                
+            # Build predicted links for evaluation (file-level deduplication)
+            code_key_to_file = {cu.code_key: Path(cu.file_path).name for cu in code_units}
+            predicted = []
+            seen = set()
+            for l in links:
+                file_name = code_key_to_file.get(l.code_key, l.code_key)
+                key = (l.req_key, file_name)
+                if key not in seen:
+                    seen.add(key)
+                    predicted.append(PredictedLink(
+                        req_key=l.req_key,
+                        code_key=file_name,
+                        score=l.score,
+                        rank=len([p for p in predicted if p.req_key == l.req_key]) + 1,
+                        label=l.label,
+                    ))
+            
+            # Run evaluation (top-k=10)
+            eval_res = evaluate(predicted, gold_links, k=10)
+            evaluation_data = {
+                "has_gold": True,
+                "hit_at_k": round(eval_res.hit_at_k, 2),
+                "mrr": round(eval_res.mrr, 3),
+                "ndcg_at_k": round(eval_res.ndcg_at_k, 3),
+                "precision_at_k": round(eval_res.precision_at_k, 3),
+                "recall_at_k": round(eval_res.recall_at_k, 3),
+                "f1_at_k": round(eval_res.f1_at_k, 3),
+                "map_score": round(eval_res.map_score, 3),
+            }
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning("Failed to run evaluation in build_trace_matrix: %s", exc)
+
     links_by_requirement: dict[str, list[TraceLinkRecord]] = {}
     for link in links:
         links_by_requirement.setdefault(link.requirement_id, []).append(link)
@@ -399,19 +485,21 @@ def build_trace_matrix(*, session: Session, project_id: str, run_id: int | None 
     rows: list[dict[str, object]] = []
     linked_requirements = 0
     implemented_requirements = 0
+    
     for requirement in requirements:
         req_links = links_by_requirement.get(requirement.requirement_id, [])
         req_links_sorted = sorted(req_links, key=lambda item: item.rank)
-        best_score = req_links_sorted[0].score if req_links_sorted else 0.0
-        best_label = req_links_sorted[0].label if req_links_sorted else "Missing"
-        if req_links_sorted:
-            linked_requirements += 1
-        if best_label == "Implemented":
-            implemented_requirements += 1
-
+        
         links_data = []
         for link in req_links_sorted:
             cu = code_index.get(link.code_unit_id)
+            
+            # Check correctness against gold standard at file level
+            is_correct = False
+            if gold_by_req and requirement.req_key in gold_by_req:
+                file_name = Path(cu.file_path).name if cu else ""
+                is_correct = file_name in gold_by_req[requirement.req_key]
+                
             links_data.append(
                 {
                     "code_unit_id": link.code_unit_id,
@@ -425,8 +513,24 @@ def build_trace_matrix(*, session: Session, project_id: str, run_id: int | None 
                     "start_line": cu.start_line if cu else 0,
                     "end_line": cu.end_line if cu else 0,
                     "content": cu.content if cu else "",
+                    "is_correct": is_correct,
                 }
             )
+
+        best_score = req_links_sorted[0].score if req_links_sorted else 0.0
+        best_score = min(best_score, 1.0)
+        best_label = req_links_sorted[0].label if req_links_sorted else "Missing"
+        
+        # Determine status labels
+        has_gold = requirement.req_key in gold_by_req
+        is_correct_match = False
+        if has_gold:
+            is_correct_match = any(ld["is_correct"] for ld in links_data)
+            
+        if req_links_sorted:
+            linked_requirements += 1
+        if best_label == "Implemented":
+            implemented_requirements += 1
 
         rows.append(
             {
@@ -436,13 +540,16 @@ def build_trace_matrix(*, session: Session, project_id: str, run_id: int | None 
                 "best_label": best_label,
                 "best_score": best_score,
                 "links": links_data,
+                "is_correct_match": is_correct_match,
+                "has_gold": has_gold,
             }
         )
 
     total = len(requirements)
     completion_percentage = round((implemented_requirements / total) * 100, 2) if total else 0.0
     coverage_percentage = round((linked_requirements / total) * 100, 2) if total else 0.0
-    return {
+    
+    response: dict[str, object] = {
         "project_id": project_id,
         "requirements_total": total,
         "requirements_linked": linked_requirements,
@@ -451,6 +558,10 @@ def build_trace_matrix(*, session: Session, project_id: str, run_id: int | None 
         "coverage_percentage": coverage_percentage,
         "rows": rows,
     }
+    if evaluation_data:
+        response["evaluation"] = evaluation_data
+        
+    return response
 
 
 def clear_project_requirements(*, session: Session, vector_store: VectorStore, project_id: str) -> None:

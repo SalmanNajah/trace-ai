@@ -124,6 +124,16 @@ def ingest_via_api(requirements_csv: Path):
     code, body = curl_post(f"{API_BASE}/api/projects/{PROJECT_ID}/reset")
     print(f"  Reset: {code}")
 
+    # Recreate the project in the database
+    print("  Re-creating project...")
+    code, body = curl_post(
+        f"{API_BASE}/api/projects",
+        data={"name": PROJECT_ID, "description": "Benchmark project for iTrust evaluation"}
+    )
+    if code not in (200, 201, 409):
+        print(f"  Project creation failed: {code} — {body}")
+        sys.exit(1)
+
     # Step 3: Upload requirements CSV directly (bypass pipeline)
     print("\n--- Step 3: Upload requirements ---")
     # We bypass the requirements pipeline and use persistence directly
@@ -251,7 +261,7 @@ def run_evaluation(gold_csv: Path, k: int):
                 predicted.append(PredictedLink(
                     req_key=l.req_key,
                     code_key=file_name,  # Match at file level
-                    score=float(l.score),
+                    score=l.score,
                     rank=len([p for p in predicted if p.req_key == l.req_key]) + 1,
                     label=l.label,
                 ))
