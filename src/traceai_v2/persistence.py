@@ -519,7 +519,7 @@ def build_trace_matrix(*, session: Session, project_id: str, run_id: int | None 
 
         best_score = req_links_sorted[0].score if req_links_sorted else 0.0
         best_score = min(best_score, 1.0)
-        best_label = req_links_sorted[0].label if req_links_sorted else "Missing"
+        best_label = _score_to_label(best_score) if req_links_sorted else "Missing"
         
         # Determine status labels
         has_gold = requirement.req_key in gold_by_req
@@ -614,8 +614,10 @@ def _score_to_label(score: float) -> str:
     """Map embedding similarity score to trace label.
 
     Thresholds calibrated for BAAI/bge-base-en-v1.5 on cross-domain
-    NL→code matching. The domain gap (natural language vs code) means
-    cosine similarity tops out around 0.65-0.70 for strong matches.
+    NL→code matching:
+    - ≥ 0.50: Valid match -> Implemented
+    - 0.38 – 0.50: Moderate match -> Partial
+    - < 0.38: Weak/No match -> Missing
     """
     if score >= 0.50:
         return "Implemented"

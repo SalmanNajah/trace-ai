@@ -145,12 +145,19 @@ class RequirementsIngestionPipeline:
             ) from exc
         raise IngestionError("Unsupported file type. Allowed: pdf, docx, txt, md")
 
+    ACTION_VERBS = ("will", "can", "allows", "supports", "manages", "provides", "enables", "maintains", "records", "adjusts", "includes")
+
     def _normalize_text(self, text: str) -> str:
         text = text.replace("\r\n", "\n").replace("\r", "\n")
         text = re.sub(r"[ \t]+", " ", text)
         lines = [line.strip() for line in text.split("\n")]
-        lines = [line for line in lines if line]
-        return "\n".join(lines)
+        normalized_lines: list[str] = []
+        for line in lines:
+            if line:
+                normalized_lines.append(line)
+            elif normalized_lines and normalized_lines[-1] != "":
+                normalized_lines.append("")
+        return "\n".join(normalized_lines).strip()
 
     def _generate_candidates(self, normalized_text: str) -> list[RequirementCandidate]:
         lines = normalized_text.split("\n")
@@ -195,13 +202,16 @@ class RequirementsIngestionPipeline:
         return candidates
 
     def _detect_line(self, line: str) -> Optional[RequirementCandidate]:
-        if re.match(r"^(FR|NFR|REQ|R)[-_ ]?\d+", line, flags=re.IGNORECASE):
-            return RequirementCandidate(text=line, rule_used="explicit_id", accepted=True, notes="")
-        lowercase = line.lower()
-        if any(keyword in lowercase for keyword in self.KEYWORDS):
-            return RequirementCandidate(text=line, rule_used="keyword_rule", accepted=True, notes="")
-        if re.match(r"^\d+(\.\d+)*[\)\.\-: ]+", line):
-            return RequirementCandidate(text=line, rule_used="numbered_rule", accepted=True, notes="")
+        clean_line = line.strip()
+        if not clean_line:
+            return None
+        if re.match(r"^(FR|NFR|REQ|R|UC|US|FEAT)[-_ ]?\d+", clean_line, flags=re.IGNORECASE):
+            return RequirementCandidate(text=clean_line, rule_used="explicit_id", accepted=True, notes="")
+        if re.match(r"^[-*+•]\s+", clean_line) or re.match(r"^\d+[\)\.\-: ]+", clean_line):
+            return RequirementCandidate(text=clean_line, rule_used="list_rule", accepted=True, notes="")
+        lowercase = clean_line.lower()
+        if any(keyword in lowercase for keyword in self.KEYWORDS) or any(verb in lowercase for verb in self.ACTION_VERBS):
+            return RequirementCandidate(text=clean_line, rule_used="keyword_rule", accepted=True, notes="")
         return None
 
     def _apply_chunk_rules(self, text: str) -> list[str]:
@@ -254,25 +264,32 @@ class RequirementsIngestionPipeline:
             return False, "page_noise"
         if len(cleaned) < 20:
             return False, "too_short"
-        # Reject section headers: numbered titles, ALL-CAPS headings, short labels
         word_count = len(cleaned.split())
-        if word_count < 5 and not any(kw in lower for kw in self.KEYWORDS):
+        if word_count < 5 and not any(kw in lower for kw in self.KEYWORDS) and not any(verb in lower for verb in self.ACTION_VERBS):
             return False, "likely_header"
-        # Reject ALL-CAPS lines (section headings)
         alpha_chars = [c for c in cleaned if c.isalpha()]
         if alpha_chars and sum(1 for c in alpha_chars if c.isupper()) / len(alpha_chars) > 0.7:
             if word_count < 8:
                 return False, "allcaps_heading"
-        # Reject numbered section titles like "6) REQUIREMENTS" or "3.1 Scope"
         if re.match(r"^\d+[\.\)]\s*\w", cleaned) and word_count < 6:
             return False, "section_title"
         return True, "accepted"
 
     def _fallback_paragraphs(self, normalized_text: str) -> list[str]:
-        paragraphs = [part.strip() for part in normalized_text.split("\n\n") if part.strip()]
-        if not paragraphs:
-            paragraphs = [line.strip() for line in normalized_text.split("\n") if line.strip()]
-        return paragraphs
+        blocks = [part.strip() for part in normalized_text.split("\n\n") if part.strip()]
+        chunks: list[str] = []
+        for block in blocks:
+            sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", block) if s.strip()]
+            for s in sentences:
+                if len(s) >= 20:
+                    chunks.append(s)
+                elif chunks:
+                    chunks[-1] += " " + s
+                else:
+                    chunks.append(s)
+        if not chunks:
+            chunks = [line.strip() for line in normalized_text.split("\n") if line.strip()]
+        return chunks
 
     def _write_interim_chunks(
         self,

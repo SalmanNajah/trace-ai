@@ -9,10 +9,10 @@ import {
   type TraceLabel,
   clampScore,
   formatScore,
-  computeAvgScore,
   computeQualityBuckets,
   computeCoverageCounts,
   QUALITY_THRESHOLDS,
+  LABEL_THRESHOLDS,
 } from "@/lib/tracing";
 
 type PipelineStep = "idle" | "resetting" | "uploading" | "ingesting" | "generating" | "done" | "error";
@@ -374,17 +374,26 @@ export default function Home() {
             </h1>
             <p className="text-xs text-foreground-muted flex items-center gap-2 mt-0.5">
               <span>{activeProject?.name || "Automated traceability"}</span>
-              {activeProject?.repo_type === "github" && activeProject?.github_url && (
+              {activeProject?.repo_type === "github" && activeProject?.github_url ? (
                 <a
                   href={activeProject.github_url}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="inline-flex items-center gap-1 rounded bg-accent/10 px-1.5 py-0.5 text-[10px] font-medium text-accent hover:bg-accent/20 transition-all cursor-pointer"
+                  title={activeProject.github_url}
                 >
                   <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.3 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61-.546-1.385-1.335-1.755-1.335-1.755-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.605-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 21.795 24 17.295 24 12c0-6.63-5.37-12-12-12"/></svg>
-                  GitHub
+                  {activeProject.github_url.replace(/^https?:\/\/github\.com\//, "").replace(/\.git$/, "")}
                 </a>
-              )}
+              ) : (activeProject?.repo_path || repoPath) ? (
+                <span
+                  className="inline-flex items-center gap-1 rounded bg-surface-raised px-2 py-0.5 text-[10px] font-mono text-foreground-subtle max-w-75 truncate"
+                  title={activeProject?.repo_path || repoPath}
+                >
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+                  {(activeProject?.repo_path || repoPath).split("/").filter(Boolean).pop() || activeProject?.repo_path || repoPath}
+                </span>
+              ) : null}
               {activeProject?.last_commit_sha && (
                 activeProject?.repo_type === "github" && activeProject?.github_url ? (
                   <a
@@ -540,33 +549,22 @@ export default function Home() {
             value={linkCount || activeProject?.trace_links_count || 0}
             info={`Requirement-to-code links generated (${reqCount || traceMatrix?.requirements_total || 0} × top-10).`}
           />
-          {traceMatrix?.evaluation ? (
+          {traceMatrix?.evaluation && (
             <StatCard
               label="Model Accuracy"
               value={`${traceMatrix.evaluation.hit_at_k.toFixed(1)}%`}
               highlight
               info="Percentage of requirements with at least one correct match in the top 10 (Hit@10)."
             />
-          ) : (
-            <StatCard
-              label="Trace Links"
-              value={linkCount || activeProject?.trace_links_count || 0}
-              info={`Requirement-to-code links generated (${reqCount || traceMatrix?.requirements_total || 0} × top-10).`}
-            />
           )}
           <StatCard
-            label={traceMatrix?.evaluation ? "Estimated Coverage" : "Estimated Coverage"}
+            label="Implementation Completion"
             value={traceMatrix ? `${traceMatrix.completion_percentage.toFixed(1)}%` : "–"}
             highlight={!traceMatrix?.evaluation}
             info={traceMatrix?.evaluation
-              ? "Confidence-based percentage of requirements with at least one predicted match above threshold."
-              : `Requirements with estimated strong semantic match (similarity ≥ ${QUALITY_THRESHOLDS.MODERATE}).`
+              ? "Percentage of requirements with verified code matches in top 10 (Hit@10)."
+              : `Percentage of requirements with code implementations detected (similarity ≥ ${LABEL_THRESHOLDS.IMPLEMENTED}).`
             }
-          />
-          <StatCard
-            label="Avg Score"
-            value={traceMatrix ? computeAvgScore(traceMatrix.rows) : "–"}
-            info={`Mean best-match cosine similarity. ${QUALITY_THRESHOLDS.MODERATE}+ is strong, ${QUALITY_THRESHOLDS.STRONG}+ is excellent.`}
           />
         </div>
       )}
@@ -1449,8 +1447,8 @@ function CoverageDashboard({ matrix }: { matrix: TraceMatrixResponse }) {
       {/* Left Column: Traceability Health Bar */}
       <div className="flex flex-col justify-center space-y-4">
         <div>
-          <h4 className="text-sm font-semibold text-foreground mb-1">Traceability Coverage</h4>
-          <p className="text-xs text-foreground-subtle">Requirement mapping coverage and status summary.</p>
+          <h4 className="text-sm font-semibold text-foreground mb-1">Requirement Implementation Status</h4>
+          <p className="text-xs text-foreground-subtle">Summary of requirements mapped by codebase implementation status.</p>
         </div>
 
         {/* Stacked Progress Bar */}
@@ -1748,7 +1746,7 @@ function RunHistoryTimeline({
                     : "border-transparent hover:bg-surface-raised/40 text-foreground-muted"
                 }`}
               >
-                <span className={`absolute left-[-21px] top-4.5 h-2 w-2 rounded-full border border-surface ${isActive ? "bg-accent" : "bg-foreground-subtle"}`} />
+                <span className={`absolute -left-5.25 top-4.5 h-2 w-2 rounded-full border border-surface ${isActive ? "bg-accent" : "bg-foreground-subtle"}`} />
                 <div className="text-xs font-semibold text-foreground">{date}</div>
                 {r.commit_sha && (
                   <div className="text-[10px] font-mono text-accent mt-0.5">
