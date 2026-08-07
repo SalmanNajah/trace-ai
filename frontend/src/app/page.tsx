@@ -214,7 +214,6 @@ export default function Home() {
       const resetRes = await fetch(`${API}/api/projects/${projectId}/reset`, { method: "POST" });
       if (!resetRes.ok) throw new Error("Reset failed");
 
-      // Re-create the project record after reset
       const recreateRes = await fetch(`${API}/api/projects`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -640,7 +639,10 @@ export default function Home() {
                       })()}
                     </td>
                     <td className="px-4 py-3">
-                      <StatusPill label={row.is_correct_match ? "Implemented" : "Missing"} isBenchmark={row.has_gold} />
+                      <StatusPill
+                        label={row.has_gold ? (row.is_correct_match ? "Implemented" : "Missing") : row.best_label}
+                        isBenchmark={row.has_gold}
+                      />
                     </td>
                   </tr>
                 ))}
@@ -1087,7 +1089,7 @@ function DetailModal({
         .then((data) => {
           if (data.explanation) {
             setExplanation(data.explanation);
-            bestLink.explanation = data.explanation; // cache in memory
+            bestLink.explanation = data.explanation;
           }
         })
         .catch((err) => console.error("Failed to load explanation:", err))
@@ -1342,7 +1344,6 @@ function CoverageDashboard({ matrix }: { matrix: TraceMatrixResponse }) {
   const evalData = matrix.evaluation;
 
   if (evalData) {
-    // Benchmark Mode: Calculate metrics based on gold-annotated requirements only
     const totalEvaluated = rows.filter(r => r.has_gold).length;
     const hits = rows.filter(r => r.is_correct_match).length;
     const misses = totalEvaluated - hits;
@@ -1434,7 +1435,6 @@ function CoverageDashboard({ matrix }: { matrix: TraceMatrixResponse }) {
     );
   }
 
-  // Fallback Confidence mode (No gold standard)
   const { implemented, partial, missing } = computeCoverageCounts(rows);
 
   const pctImpl = total > 0 ? (implemented / total) * 100 : 0;

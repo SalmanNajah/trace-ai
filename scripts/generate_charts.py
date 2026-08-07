@@ -50,7 +50,7 @@ def chart_overall_performance(data, out_dir):
     values = [m[1] for m in metrics]
     
     fig, ax = plt.subplots(figsize=(6.5, 5))
-    bars = ax.bar(labels, values, color="#1f77b4", width=0.45, zorder=3)
+    bars = ax.bar(labels, values, color="#1b365d", edgecolor="#000000", linewidth=0.8, width=0.45, zorder=3)
     
     # Add labels on top of the bars
     for bar, val in zip(bars, values):
@@ -97,7 +97,7 @@ def chart_rank_distribution(data, out_dir):
     values = [counts[l] for l in labels]
     
     fig, ax = plt.subplots(figsize=(6.5, 5))
-    bars = ax.bar(labels, values, color="#1f77b4", width=0.45, zorder=3)
+    bars = ax.bar(labels, values, color="#1b365d", edgecolor="#000000", linewidth=0.8, width=0.45, zorder=3)
     
     # Add integer value labels on top of the bars
     for bar, val in zip(bars, values):
@@ -129,7 +129,7 @@ def chart_precision_variation(data, out_dir):
     precisions = [r["precision_at_k"] for r in reqs]
     
     fig, ax = plt.subplots(figsize=(10, 4.5))
-    ax.plot(keys, precisions, marker="o", color="#1f77b4", linestyle="-", linewidth=1.0, markersize=3, zorder=3)
+    ax.plot(keys, precisions, marker="o", color="#1b365d", linestyle="-", linewidth=1.2, markersize=3, zorder=3)
     
     ax.set_ylabel("Precision", fontsize=11)
     ax.set_xlabel("Requirements", fontsize=11)
@@ -193,9 +193,10 @@ def chart_scalability(out_dir):
     
     fig, ax = plt.subplots(figsize=(7.5, 5))
     
-    rects1 = ax.bar(x - width, embed_req, width, label="Embed Reqs", color="#a855f7", zorder=3)
-    rects2 = ax.bar(x, embed_code, width, label="Embed Code", color="#22c55e", zorder=3)
-    rects3 = ax.bar(x + width, trace_gen, width, label="Trace Link Gen", color="#6366f1", zorder=3)
+    # Using IEEE corporate palette colors with custom edge colors and distinct grayscale-friendly hatches
+    rects1 = ax.bar(x - width, embed_req, width, label="Embed Reqs", color="#1b365d", edgecolor="#000000", linewidth=0.8, hatch="//", zorder=3)
+    rects2 = ax.bar(x, embed_code, width, label="Embed Code", color="#5c768d", edgecolor="#000000", linewidth=0.8, hatch="\\\\", zorder=3)
+    rects3 = ax.bar(x + width, trace_gen, width, label="Trace Link Gen", color="#b9c5cf", edgecolor="#000000", linewidth=0.8, hatch="..", zorder=3)
     
     ax.set_yscale('log')
     ax.set_ylabel("Time (seconds, log scale)", fontsize=11)
@@ -229,6 +230,7 @@ def chart_scalability(out_dir):
     fig.savefig(out_dir / "scalability_chart.png", dpi=200, bbox_inches="tight")
     plt.close(fig)
     print("  ✓ scalability_chart.png (Feature 8)")
+
 
 
 def main():
