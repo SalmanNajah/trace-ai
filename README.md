@@ -157,3 +157,5 @@ To dive deeper into setup, architecture, and evaluations:
 * ⚙️ **[Development Setup](docs/SETUP.md)**: Full local setup, environment configuration, and backend API reference.
 * 🏗️ **[Architecture Details](docs/ARCHITECTURE.md)**: Exhaustive breakdown of code parser AST chunking, pipeline flows, and data representations.
 * 📊 **[Evaluation & Benchmarks](docs/EVALUATION.md)**: Metrics overview, iTrust dataset structure, and reproducing research results.
+
+Major Project
