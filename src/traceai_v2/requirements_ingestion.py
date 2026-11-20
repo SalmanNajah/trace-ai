@@ -9,6 +9,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Optional, Union
 
+from .csv_utils import configure_csv_field_limit
+
 
 class IngestionError(Exception):
     pass
@@ -395,6 +397,7 @@ class RequirementsIngestionPipeline:
         return len(rows)
 
     def _load_existing_key_map(self, processed_project_dir: Path) -> tuple[dict[str, str], int]:
+        configure_csv_field_limit()
         existing = sorted(processed_project_dir.glob("requirements_v*.csv"))
         mapping: dict[str, str] = {}
         max_index = 0

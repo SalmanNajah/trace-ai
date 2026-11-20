@@ -158,4 +158,109 @@ To dive deeper into setup, architecture, and evaluations:
 * 🏗️ **[Architecture Details](docs/ARCHITECTURE.md)**: Exhaustive breakdown of code parser AST chunking, pipeline flows, and data representations.
 * 📊 **[Evaluation & Benchmarks](docs/EVALUATION.md)**: Metrics overview, iTrust dataset structure, and reproducing research results.
 
-Major Project
+---
+
+## Benchmark Datasets & Manual Execution Guide
+
+TraceAI supports IEEE-compliant scientific benchmarking across multiple languages and datasets:
+1. **iTrust (Java)**: Medical EHR system (132 requirements, 19 Java files, 276 gold links).
+2. **LibEST (C)**: RFC 7030 Enrollment over Secure Transport (52 requirements, 14 C files, 204 gold links).
+
+### 1. Data Directory Structure (`data/`)
+
+```
+data/
+├── repos/                   # Cloned Git repositories (GitHub integration)
+├── raw/uploads/             # User-uploaded requirements files (PDF, DOCX, TXT)
+├── interim/                 # Staging tables before DB/Vector insertion
+│   ├── code_units/          # Extracted Tree-sitter AST chunks (.csv)
+│   └── requirements/        # Extracted normalized requirement chunks (.csv, .txt)
+├── processed/projects/      # Consolidated project outputs & cached indices
+└── benchmarks/              # Peer-reviewed scientific ground-truth datasets
+    ├── iTrust/              # Java EHR Benchmark
+    └── LibEST/              # C RFC 7030 Benchmark
+```
+
+Each benchmark folder contains:
+- `code/`: Source code files under evaluation (`.java` or `.c`/`.h`).
+- `req/`: Individual raw requirement text files.
+- `requirements_<dataset>.csv`: Cleaned structured table of requirements.
+- `gold_links_<dataset>.csv`: Human-annotated ground-truth links mapping requirements to implementing code files.
+- `eval_results_<dataset>.json`: Empirical benchmark evaluation results.
+
+### 2. Metric Definitions & Intuition
+
+#### Information Retrieval (IR) Metrics ($k=10$)
+- **Hit@10 (Requirement Success Rate)**: The percentage of requirements for which at least *one* correct implementing file was retrieved in the top 10 results. In practice, this measures whether the developer gets a useful starting point for their task.
+- **Recall@10 (Code Completeness)**: The proportion of all true ground-truth trace links that were captured within the top 10 recommendations. High recall ensures that developers and auditors do not miss critical implementation files.
+- **Precision@10 (Result Purity)**: The fraction of top-10 recommended files that are valid ground-truth implementations.
+- **F1@10**: The harmonic mean of Precision@10 and Recall@10, providing a balanced measure of retrieval accuracy.
+- **MRR (Mean Reciprocal Rank)**: $\frac{1}{|Q|}\sum \frac{1}{\text{rank}_1}$, measuring where the *first* correct file appears. If the first correct file is at rank 1, score is $1.0$; if at rank 2, score is $0.5$; if at rank 3, $0.33$. Higher MRR means less scrolling and manual inspection for the developer.
+- **nDCG@10 (Ranking Quality)**: Normalized Discounted Cumulative Gain. Unlike Hit@10 which treats any rank in the top 10 equally, nDCG rewards placing relevant files higher in the list and penalizes relevant files placed lower down.
+- **MAP (Mean Average Precision)**: The average of precision scores computed at each position where a relevant file is retrieved, evaluating overall ranking precision across all recall levels.
+
+#### RAG Explanation Quality Metrics ($N=30$ audited links per dataset)
+- **Code Faithfulness (%)**: The percentage of code identifiers (methods, functions, classes, and variables) cited in Gemini's generated explanation that actually exist inside the target repository files. Verifies that the model references real code.
+- **Entity Hallucination Rate (%)**: The percentage of generated explanations that contain at least one fabricated, non-existent, or unverified code identifier.
+- **Factuality Score (1–5 Likert Scale)**: Human and LLM-as-a-judge score assessing whether the technical explanation is factually accurate regarding how the code satisfies the requirement.
+- **Developer Utility Score (1–5 Likert Scale)**: Assessment of whether the explanation is actionable, clear, and useful for a developer during code review or maintenance.
+- **Mean Word Count**: The average length of the generated explanation, measuring conciseness (target: 25–35 words).
+
+### 3. Unified Manual Execution Guide
+
+Ensure the database containers are active:
+```bash
+docker compose -f infra/docker-compose.yml up -d
+```
+
+Set Python path and activate the virtual environment:
+```bash
+source .venv/bin/activate
+export PYTHONPATH=src
+```
+
+#### A. Full Benchmark Evaluations ($k=10$)
+```bash
+# iTrust (Java EHR System):
+PYTHONPATH=src .venv/bin/python scripts/run_benchmark.py --dataset itrust --eval-only --k 10
+
+# eTour (Java Tourism GIS System):
+PYTHONPATH=src .venv/bin/python scripts/run_benchmark.py --dataset etour --eval-only --k 10
+
+# LibEST (C RFC 7030 Secure Transport):
+PYTHONPATH=src .venv/bin/python scripts/run_benchmark.py --dataset libest --eval-only --k 10
+
+# Run all 3 datasets in sequence:
+PYTHONPATH=src .venv/bin/python scripts/run_benchmark.py --dataset all --eval-only --k 10
+```
+
+#### B. Component Ablation Studies ($k=10$)
+```bash
+# iTrust Ablation:
+PYTHONPATH=src .venv/bin/python scripts/run_ablation.py --dataset itrust --k 10
+
+# eTour Ablation:
+PYTHONPATH=src .venv/bin/python scripts/run_ablation.py --dataset etour --k 10
+
+# LibEST Ablation:
+PYTHONPATH=src .venv/bin/python scripts/run_ablation.py --dataset libest --k 10
+
+# Run all 3 ablations in sequence:
+PYTHONPATH=src .venv/bin/python scripts/run_ablation.py --dataset all --k 10
+```
+
+#### C. RAG Trace Explanation Quality Evaluations
+```bash
+# iTrust Explanations:
+PYTHONPATH=src .venv/bin/python scripts/evaluate_explanations.py --dataset itrust --sample-size 30
+
+# eTour Explanations:
+PYTHONPATH=src .venv/bin/python scripts/evaluate_explanations.py --dataset etour --sample-size 30
+
+# LibEST Explanations:
+PYTHONPATH=src .venv/bin/python scripts/evaluate_explanations.py --dataset libest --sample-size 30
+
+# Run all 3 explanation evaluations:
+PYTHONPATH=src .venv/bin/python scripts/evaluate_explanations.py --dataset all --sample-size 30
+```
+

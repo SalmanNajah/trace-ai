@@ -11,6 +11,7 @@ logger = logging.getLogger(__name__)
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
+from .csv_utils import configure_csv_field_limit
 from .embeddings import embed_batch, embed_text
 from .storage import CodeUnitRecord, ProjectRecord, RequirementRecord, TraceLinkRecord
 from .vector_store import VectorStore
@@ -41,6 +42,7 @@ def persist_requirements_csv(
 ) -> PersistResult:
     path = Path(csv_path)
     result = PersistResult()
+    configure_csv_field_limit()
     project_id = _project_id_from_csv(path)
     clear_project_requirements(session=session, vector_store=vector_store, project_id=project_id)
 
@@ -96,6 +98,7 @@ def persist_code_units_csv(
 ) -> PersistResult:
     path = Path(csv_path)
     result = PersistResult()
+    configure_csv_field_limit()
     project_id = _project_id_from_csv(path)
     clear_project_code_units(session=session, vector_store=vector_store, project_id=project_id)
 
@@ -323,9 +326,6 @@ def generate_trace_links(
             display_score = float(score_val) if score_val is not None else float(candidate["score"])
             display_score = min(display_score, 1.0)  # clamp to 0-1 (BM25/RRF scores are unbounded)
             label = _score_to_label(display_score)
-            # Only store links with meaningful confidence (Partial or Implemented)
-            if label == "Missing":
-                continue
             explanation = (
                 f"Semantic match between requirement `{requirement.req_key}` and "
                 f"`{code_unit.file_path}:{code_unit.start_line}-{code_unit.end_line}`"
@@ -602,6 +602,7 @@ def reset_project(*, session: Session, vector_store: VectorStore, project_id: st
 
 
 def _project_id_from_csv(path: Path) -> str:
+    configure_csv_field_limit()
     with path.open("r", newline="", encoding="utf-8") as handle:
         reader = csv.DictReader(handle)
         first = next(reader, None)

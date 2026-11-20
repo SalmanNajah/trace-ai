@@ -19,6 +19,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional, Union
 
+from .csv_utils import configure_csv_field_limit
+
 logger = logging.getLogger(__name__)
 
 
@@ -234,7 +236,10 @@ class LocalRepoIngestionPipeline:
     EXCLUDED_DIRS = {
         ".git",
         ".next",
+        ".nuxt",
+        ".turbo",
         ".venv",
+        ".vite",
         "__pycache__",
         "build",
         "coverage",
@@ -242,11 +247,17 @@ class LocalRepoIngestionPipeline:
         "node_modules",
         "out",
         "target",
+        "vendor",
         "venv",
+        "vite-dev",
+        "vite-test",
     }
     EXCLUDED_FILE_PATTERNS = [
         re.compile(r".*\.min\.(js|css)$", re.IGNORECASE),
         re.compile(r".*\.map$", re.IGNORECASE),
+        re.compile(r".*-[a-z0-9_-]{8,}\.(js|css)$", re.IGNORECASE),
+        re.compile(r".*\.bundle\.(js|css)$", re.IGNORECASE),
+        re.compile(r".*\.chunk\.(js|css)$", re.IGNORECASE),
         re.compile(r"^google[a-z0-9]+\.html$", re.IGNORECASE),
         re.compile(r"^sw\.js$", re.IGNORECASE),
         re.compile(r"^favicon\.ico$", re.IGNORECASE),
@@ -544,6 +555,9 @@ class LocalRepoIngestionPipeline:
         relative = file_path.relative_to(repo_root)
         parts = {part.lower() for part in relative.parts}
         if parts & self.EXCLUDED_DIRS:
+            return True
+        parts_list = [part.lower() for part in relative.parts]
+        if "public" in parts_list and ("assets" in parts_list or "build" in parts_list):
             return True
         file_name = file_path.name
         for pattern in self.EXCLUDED_FILE_PATTERNS:

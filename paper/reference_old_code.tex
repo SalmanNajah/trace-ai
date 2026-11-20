@@ -1,0 +1,480 @@
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{url}
+\usepackage{array}
+\usepackage{float}
+\usepackage{setspace}
+\usepackage{caption}
+\usepackage[utf8]{inputenc}
+\usepackage{geometry}
+
+% Force all figures to behave like [H]
+\makeatletter
+\def\fps@figure{H}
+\makeatother
+
+\renewcommand{\arraystretch}{1.15}
+
+\geometry{
+ a4paper,
+ total={210mm,297mm},
+ left=0.75in,
+ right=0.75in,
+ top=0.75in,
+ bottom=0.75in,
+}
+
+\begin{document}
+
+% --- TITLE ---
+\title{A Hybrid Retrieval Framework for Automated Requirement-to-Code Traceability}
+
+\author{
+  \begin{tabular}{c@{\extracolsep{2cm}}c}
+    \textbf{B S Salman Najah} & \textbf{Aseem Ahamed} \\
+    \small Dept. of Computer Science and Engineering & \small Dept. of Computer Science and Engineering \\
+    \small Sahyadri College of Engineering and Management & \small Sahyadri College of Engineering and Management \\
+    \small Mangaluru, India & \small Mangaluru, India \\
+    \small salmannajah123@gmail.com & \small aseemahmed250@gmail.com \\
+    [0.4cm] % Row spacing
+    \textbf{Muhammad Fayaz Ullal} & \textbf{Mohammed Shabik} \\
+    \small Dept. of Computer Science and Engineering & \small Dept. of Computer Science and Engineering \\
+    \small Sahyadri College of Engineering and Management & \small Sahyadri College of Engineering and Management \\
+    \small Mangaluru, India & \small Mangaluru, India \\
+    \small fayazullal08@gmail.com & \small muhammadsabik.org@gmail.com \\
+    [0.4cm] % Row spacing
+    \multicolumn{2}{c}{\textbf{Deepti Rai}} \\
+    \multicolumn{2}{c}{\small Dept. of Computer Science and Engineering} \\
+    \multicolumn{2}{c}{\small Sahyadri College of Engineering and Management} \\
+    \multicolumn{2}{c}{\small Mangaluru, India} \\
+    \multicolumn{2}{c}{\small dee.rai@gmail.com}
+  \end{tabular}
+}
+
+\maketitle
+
+\begin{abstract}
+Maintaining traceability between software requirements and source code is fundamental to software maintenance, impact analysis, verification, and debugging. In practice, however, manually establishing and maintaining trace links is labor-intensive and often fails to keep pace with evolving software systems. This paper presents \textit{TraceAI}, a hybrid retrieval framework for automated requirement-to-code traceability that combines BM25 lexical retrieval, dense semantic retrieval, Reciprocal Rank Fusion (RRF), cross-encoder reranking, and Abstract Syntax Tree (AST)-based code segmentation. To improve the interpretability of the generated trace links, the framework also integrates Retrieval-Augmented Generation (RAG) to produce natural-language explanations. The proposed approach is evaluated across three software engineering benchmarks (iTrust, eTour, and LibEST) spanning Java and C, achieving an average Hit@10 of 87.3\%, Recall@10 of 65.03\%, and MRR of 0.6694. Component ablation isolates the contributions of lexical, dense, and rank-fusion stages, while an empirical grounding audit confirms the factual faithfulness of generated explanations. The evaluation further analyzes performance across requirement categories and examines framework scalability on repositories of increasing size. The findings indicate that TraceAI provides an effective and practical approach for automated requirement-to-code traceability.
+\end{abstract}
+
+\begin{IEEEkeywords}
+Requirements Traceability, Hybrid Retrieval, Retrieval-Augmented Generation (RAG), Reciprocal Rank Fusion, Cross-Encoder Reranking, Abstract Syntax Tree, Multi-Language Benchmarking
+\end{IEEEkeywords}
+
+\section{Introduction}
+
+Software systems continue to grow in size and complexity, making it increasingly difficult to maintain traceability between software requirements and the source code that implements them. Requirement-to-code traceability plays an important role in software maintenance, change impact analysis, verification, regression testing, and debugging by enabling developers to understand how system requirements are realized within the implementation \cite{ref5}. However, manually establishing and maintaining trace links is time-consuming, error-prone, and difficult to sustain as software projects evolve.
+
+To reduce manual effort, researchers have explored automated traceability recovery using Information Retrieval (IR) techniques. Traditional lexical retrieval methods such as BM25 \cite{ref13} effectively identify exact identifier and keyword matches but often fail when requirements and source code use different terminology. Dense semantic retrieval addresses this limitation by capturing contextual similarity, while recent approaches further improve retrieval quality through neural reranking, hybrid retrieval strategies, and Large Language Models (LLMs) \cite{ref2,ref7,ref8}. Repository-aware retrieval methods have also demonstrated the benefits of incorporating source-code structure into the retrieval process \cite{ref9,ref10,ref11}.
+
+Despite these advances, existing approaches still face challenges in balancing lexical precision, semantic understanding, structural awareness, and the interpretability of generated trace links. Many methods focus on improving retrieval accuracy but provide limited insight into why a particular implementation artifact is associated with a requirement, reducing their usefulness in practical maintenance scenarios.
+
+This paper presents \textit{TraceAI}, a hybrid retrieval framework for automated requirement-to-code traceability. The proposed framework combines BM25 lexical retrieval, dense semantic retrieval, Reciprocal Rank Fusion (RRF), cross-encoder reranking, and Abstract Syntax Tree (AST)-based code segmentation to improve trace-link recovery. Retrieval-Augmented Generation (RAG) is further incorporated to generate concise natural-language explanations that improve the interpretability of predicted trace links.
+
+The proposed framework is evaluated across three software engineering benchmarks (iTrust, eTour, LibEST) spanning Java and C, accompanied by a component ablation study and an empirical audit of explanation quality.
+
+The main contributions of this paper are as follows:
+
+\begin{itemize}
+    \item We propose \textit{TraceAI}, a hybrid retrieval framework for automated requirement-to-code traceability that integrates lexical retrieval, dense semantic retrieval, neural reranking, and Retrieval-Augmented Generation (RAG).
+
+    \item We introduce a retrieval pipeline that combines BM25, Reciprocal Rank Fusion, cross-encoder reranking, and AST-based code segmentation to generate accurate and interpretable requirement-to-file trace links.
+
+    \item We evaluate the proposed framework across three benchmarks (iTrust, eTour, LibEST), conduct a component ablation study isolating each retrieval stage, and verify the faithfulness of RAG explanations.
+\end{itemize}
+
+
+\section{Literature Survey}
+
+Automated requirements traceability has long been studied to reduce the effort involved in establishing and maintaining links between software requirements and implementation artifacts. Recent work has increasingly focused on requirement-to-code traceability, where the objective is to identify source code that satisfies a given requirement. Fischbach \textit{et al.} \cite{ref4} investigated traceability between natural language requirements and source code, while Wang \textit{et al.} \cite{ref5} presented an empirical evaluation of existing requirement-to-code traceability techniques and highlighted the limitations of retrieval-based approaches. More recently, Zhang \textit{et al.} \cite{ref1} demonstrated that combining large language model based data augmentation with advanced neural encoders improves trace-link recovery.
+
+The rapid adoption of Large Language Models (LLMs) has further advanced automated traceability research. LLMs have been applied to cross-level requirements tracing \cite{ref2}, security requirements traceability \cite{ref6}, and retrieval-augmented trace-link recovery \cite{ref7,ref8}. Rizvi's systematic mapping study \cite{ref3} reports a growing use of LLMs for traceability while identifying challenges related to scalability, explainability, and reliable link recovery.
+
+Recent advances in Retrieval-Augmented Generation (RAG) have also influenced repository-level software engineering. Repository-aware frameworks such as cAST \cite{ref10}, CodeRAG \cite{ref11}, and Practical Code RAG \cite{ref19} demonstrate that structural code segmentation and repository-aware retrieval improve retrieval effectiveness. Supporting techniques including BM25 \cite{ref13}, Reciprocal Rank Fusion \cite{ref14}, cross-encoder reranking \cite{ref15}, and modern code representation models such as CodeBERT \cite{ref16}, GraphCodeBERT \cite{ref17}, and Sentence-BERT \cite{ref18} provide strong foundations for hybrid retrieval systems.
+
+Although these studies have significantly advanced automated traceability, most existing approaches emphasize either semantic retrieval, LLM-based reasoning, or repository-aware retrieval in isolation. Comparatively fewer approaches integrate lexical retrieval, dense semantic retrieval, rank fusion, neural reranking, AST-based code segmentation, and Retrieval-Augmented Generation within a unified end-to-end framework for requirement-to-code traceability. This research addresses that gap through the proposed framework, which combines these complementary techniques to improve both retrieval accuracy and trace-link interpretability.
+
+\section{Methodology}
+
+\subsection{Overall Architecture}
+
+The proposed framework adopts a layered architecture consisting of a presentation layer, an application layer, and a data layer, as shown in Fig.~\ref{fig:architecture}. The presentation layer provides a web interface for uploading Software Requirement Specification (SRS) documents, connecting source-code repositories, and visualizing generated trace links. The application layer comprises four core components: Requirement Processing, Repository Processing, Hybrid Retrieval and Reranking, and Traceability. The data layer uses Qdrant to store semantic embeddings and PostgreSQL to maintain project metadata and generated trace links.
+
+Requirements and source code are processed independently before being matched through a hybrid retrieval pipeline. Candidate implementation units are retrieved using lexical and dense semantic retrieval, fused using Reciprocal Rank Fusion (RRF), refined through a cross-encoder reranker, and aggregated into requirement-to-file trace links. The retrieved implementation context is subsequently supplied to a Retrieval-Augmented Generation (RAG) module to generate concise natural-language explanations.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\linewidth]{figs/fig_architecture.png}
+\caption{Overall architecture of the proposed TraceAI framework.}
+\label{fig:architecture}
+\end{figure}
+
+\subsection{Requirement Processing}
+
+The traceability process begins by extracting requirements from Software Requirement Specification (SRS) documents in PDF, DOCX, TXT, or CSV format. The extracted content is segmented into individual requirement statements, while existing requirement identifiers are preserved whenever available; otherwise, unique identifiers are generated automatically.
+
+Each requirement is encoded into a dense semantic embedding using the \texttt{BAAI/bge-base-en-v1.5} model. The embedding vectors are indexed in the Qdrant vector database, while associated metadata, including requirement identifiers and project information, is stored in PostgreSQL to support efficient retrieval, trace-link generation, and result visualization.
+
+\subsection{Repository Processing}
+
+The connected software repository is traversed to identify implementation files while excluding generated code, dependency directories, and other non-source artifacts. Each supported source file is parsed using Tree-sitter to construct an Abstract Syntax Tree (AST), enabling the extraction of syntactically meaningful program elements such as classes, methods, and functions \cite{ref10,ref12}.
+
+Each extracted program element is treated as an independent retrieval unit, preserving logical code boundaries and richer contextual information than fixed-length or line-based chunking. For unsupported languages, the framework falls back to coarse-grained code segmentation.
+
+The resulting code chunks are encoded using the \texttt{BAAI/bge-base-en-v1.5} embedding model and stored with metadata, including the source file path, programming language, and chunk location, to support efficient retrieval, reranking, and requirement-to-file trace-link generation.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.92\linewidth]{figs/fig_dfd.png}
+\caption{Data flow through requirement and repository processing, hybrid retrieval, reranking, and trace-link generation.}
+\label{fig:dfd}
+\end{figure}
+
+\subsection{Hybrid Retrieval}
+
+For each requirement, TraceAI retrieves candidate code chunks using a hybrid retrieval strategy that combines lexical and dense semantic retrieval. BM25 captures exact identifier and keyword matches, while semantic retrieval identifies conceptually related implementation despite limited lexical overlap.
+
+The lexical relevance between a requirement query $q$ and a code chunk $d$ is computed using BM25 \cite{ref13}:
+
+\begin{equation}
+\mathrm{BM25}(q,d)=
+\sum_{t\in q}
+\mathrm{IDF}(t)\,
+\frac{f(t,d)(k_1+1)}
+{f(t,d)+k_1\left(1-b+b\frac{|d|}{\mathrm{avgdl}}\right)}
+\label{eq:bm25}
+\end{equation}
+
+where $f(t,d)$ denotes the frequency of term $t$ in chunk $d$, $|d|$ is the chunk length, and $\mathrm{avgdl}$ is the average chunk length.
+
+Requirements and code chunks are represented using \texttt{BAAI/bge-base-en-v1.5} embeddings. Their semantic similarity is computed as
+
+\begin{equation}
+\mathrm{CosSim}(A,B)=
+\frac{A\cdot B}
+{\|A\|\,\|B\|}
+\label{eq:cosine}
+\end{equation}
+
+where $A$ and $B$ denote the embedding vectors of the requirement and code chunk, respectively.
+
+\subsection{Reciprocal Rank Fusion}
+
+The ranked outputs from lexical and semantic retrieval are combined using Reciprocal Rank Fusion (RRF) \cite{ref14}, eliminating the need for score normalization between the two retrieval methods.
+
+\begin{equation}
+\mathrm{RRF}(d)=
+\sum_{i=1}^{n}
+\frac{1}
+{k+\mathrm{rank}_i(d)}
+\label{eq:rrf}
+\end{equation}
+
+where $\mathrm{rank}_i(d)$ denotes the rank of code chunk $d$ in the $i^{\text{th}}$ retrieval list and $k$ is a constant that reduces the influence of lower-ranked candidates. The resulting ranking is forwarded to the cross-encoder reranker for contextual refinement.
+
+
+\subsection{Cross-Encoder Reranking}
+
+The fused candidate chunks are reranked using the \texttt{cross-encoder/ms-marco-MiniLM-L-6-v2} model, which jointly encodes each requirement--code pair to estimate contextual relevance \cite{ref15}. The final chunk-level relevance score is computed as
+
+\begin{equation}
+\mathrm{Score}(d)=
+\alpha\,\mathrm{CE}(d)
++
+(1-\alpha)\,\mathrm{RRF}(d)
+\label{eq:score}
+\end{equation}
+
+where $\mathrm{CE}(d)$ is the cross-encoder relevance score, $\mathrm{RRF}(d)$ is the fused retrieval score, and $\alpha$ controls their relative contributions. In the proposed framework, $\alpha=0.4$, giving greater weight to the fused retrieval score while incorporating contextual refinement from the cross-encoder. The reranked candidates are then passed to the trace-link generation stage.
+
+\subsection{Trace Link Generation}
+
+Since retrieval and reranking operate at the code-chunk level, chunk scores are aggregated to the file level by selecting the maximum score among all chunks belonging to the same source file:
+
+\begin{equation}
+\mathrm{Score}(f)=
+\max_{c\in f}
+\mathrm{Score}(c)
+\label{eq:file}
+\end{equation}
+
+where $f$ denotes a source file and $c$ represents its constituent code chunks. The resulting file scores are ranked to generate the final requirement-to-file trace links. Based on predefined confidence thresholds, each link is classified as \textit{Implemented}, \textit{Partial}, or \textit{Missing}.
+
+\subsection{Retrieval-Augmented Generation}
+
+To improve the interpretability of the generated trace links, our system incorporates a Retrieval-Augmented Generation (RAG) module. After the final requirement-to-file trace links are generated, the highest-ranked code chunks are supplied as contextual evidence to a Large Language Model (LLM), which produces concise natural-language explanations describing how the retrieved implementation satisfies the corresponding requirement.
+
+Unlike conventional RAG pipelines, retrieval, rank fusion, and cross-encoder reranking are completed before invoking the LLM. This ensures that the generated explanations are grounded in highly relevant implementation artifacts, improving interpretability while reducing hallucinations. The RAG module supports developers in understanding and validating the generated trace links without modifying the underlying retrieval process.
+
+\section{Experimental Setup}
+
+The proposed framework is evaluated across three software engineering benchmarks: iTrust (a healthcare system in Java, 105 requirements with ground truth, 286 gold links), eTour (a tourism navigation system in Java, 57 requirements, 308 gold links), and LibEST (a secure networking library in C, 47 requirements, 204 gold links). All indexing, retrieval, and reranking experiments were executed locally on an Apple MacBook Air M4 platform (16\,GB Unified Memory) using Qdrant for vector storage and PostgreSQL for metadata. The evaluated pipeline consists of AST-based code segmentation, hybrid retrieval using BM25 and dense semantic embeddings, Reciprocal Rank Fusion (RRF), cross-encoder reranking, and file-level trace-link generation ($k=10$). The top candidate files are provided to the RAG module to synthesize natural-language explanations.
+
+\begin{table}[H]
+\centering
+\caption{Experimental Configuration}
+\label{tab:config}
+\small
+\renewcommand{\arraystretch}{1.08}
+\begin{tabular}{@{}p{3.0cm}p{4.5cm}@{}}
+\toprule
+\textbf{Component} & \textbf{Configuration} \\
+\midrule
+Datasets & iTrust (Java), eTour (Java), LibEST (C) \\
+Hardware Platform & Apple MacBook Air M4, 16 GB Unified Memory \\
+Embedding model & BAAI/bge-base-en-v1.5 \\
+Reranker & cross-encoder/ms-marco-MiniLM-L-6-v2 \\
+RAG Explainer & Google Gemini 2.5 Flash \\
+Retrieval & BM25 + Dense Semantic + RRF \\
+Parser & Tree-sitter (AST) \\
+Vector database & Qdrant \\
+Relational database & PostgreSQL \\
+Framework & FastAPI + Next.js \\
+Top-$k$ & 10 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Evaluation Metrics}
+
+The proposed framework is evaluated using standard information retrieval metrics computed at $k=10$ unless otherwise specified:
+
+\begin{itemize}
+\item \textbf{Precision@10} -- proportion of relevant files among the top-10 retrieved files.
+\item \textbf{Recall@10} -- proportion of all relevant files retrieved within the top 10.
+\item \textbf{F1@10} -- harmonic mean of Precision@10 and Recall@10.
+\item \textbf{Hit@10} -- proportion of requirements for which at least one correct file is retrieved within the top 10.
+\item \textbf{Mean Reciprocal Rank (MRR)} -- average reciprocal rank of the first correct result.
+\item \textbf{Mean Average Precision (MAP)} -- mean of the average precision computed for each requirement.
+\item \textbf{nDCG@10} -- normalized discounted cumulative gain, rewarding correct files ranked higher in the retrieved list.
+\end{itemize}
+
+To evaluate RAG explanation quality, we assess code faithfulness (the percentage of cited code identifiers confirmed to exist in the source repository) and entity hallucination rate across $N=30$ audited links per benchmark.
+
+These metrics jointly evaluate retrieval accuracy, ranking quality, and the practical effectiveness of the proposed framework for requirement-to-code traceability.
+
+\section{Results and Discussion}
+
+\subsection{Overall Performance}
+
+Fig.~\ref{fig:overall} summarizes the overall retrieval performance of the proposed framework on the iTrust benchmark at $k=10$. The system achieves a Precision@10 of 0.1238, Recall@10 of 0.4834, F1@10 of 0.1890, and Hit@10 of 74.3\%.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\linewidth]{figs/fig_overall_metrics.png}
+\caption{Overall evaluation metrics on iTrust at $k=10$.}
+\label{fig:overall}
+\end{figure}
+
+In addition to the primary retrieval metrics, the framework achieves an MRR of 0.4977, MAP of 0.2879, and nDCG@10 of 0.3924 on iTrust, indicating that relevant implementation files are consistently ranked near the top of retrieved candidates, minimizing manual inspection effort.
+
+To test generalizability across different software architectures, TraceAI was evaluated across three benchmarks spanning Java and C (Table~\ref{tab:baseline_comparison}) against standard IR baselines (VSM via TF-IDF and BM25) evaluated under identical ranking conditions ($k=10$). TraceAI achieves a mean Hit@10 of 87.3\%, Recall@10 of 65.03\%, and MRR of 0.6694, outperforming VSM by 7.54 percentage points and BM25 by 9.17 percentage points in recall with consistent gains in ranking precision. Unlike remote LLM approaches like LiSSA \cite{ref8} requiring external API calls per candidate, TraceAI operates locally using embeddings and rank fusion across Java and C.
+
+\begin{table}[H]
+\centering
+\caption{Cross-Dataset Traceability Performance ($k=10$)}
+\label{tab:baseline_comparison}
+\footnotesize
+\setlength{\tabcolsep}{3.8pt}
+\renewcommand{\arraystretch}{1.05}
+\begin{tabular}{@{}llcccc@{}}
+\toprule
+\textbf{Dataset} & \textbf{Method} & \textbf{Hit@10} & \textbf{Recall} & \textbf{MRR} & \textbf{MAP} \\
+\midrule
+iTrust & VSM (TF-IDF) & 71.4\% & 0.4229 & 0.3708 & 0.2058 \\
+ & BM25 (Lexical) & 70.5\% & 0.4564 & 0.4257 & 0.2563 \\
+ & \textbf{TraceAI} & \textbf{74.3\%} & \textbf{0.4834} & \textbf{0.4977} & \textbf{0.2879} \\
+\midrule
+eTour & VSM (TF-IDF) & \textbf{91.2\%} & 0.4156 & 0.5741 & 0.2526 \\
+ & BM25 (Lexical) & 87.7\% & 0.4092 & 0.5235 & 0.2334 \\
+ & \textbf{TraceAI} & 87.7\% & \textbf{0.5026} & \textbf{0.6489} & \textbf{0.3305} \\
+\midrule
+LibEST & VSM (TF-IDF) & \textbf{100.0\%} & 0.8862 & 0.8014 & 0.6371 \\
+ & BM25 (Lexical) & \textbf{100.0\%} & 0.8101 & 0.8351 & 0.6229 \\
+ & \textbf{TraceAI} & \textbf{100.0\%} & \textbf{0.9649} & \textbf{0.8617} & \textbf{0.7457} \\
+\midrule
+Mean & VSM (TF-IDF) & \textbf{87.6\%} & 0.5749 & 0.5821 & 0.3652 \\
+ & BM25 (Lexical) & 86.1\% & 0.5586 & 0.5948 & 0.3709 \\
+ & \textbf{TraceAI} & 87.3\% & \textbf{0.6503} & \textbf{0.6694} & \textbf{0.4547} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Component Ablation Study}
+
+To measure how each retrieval step contributes to overall accuracy, five pipeline variations were evaluated across all three benchmarks (Table~\ref{tab:ablation}). The results show that lexical search and semantic embeddings complement each other well. On eTour, using lexical search alone (BM25 Only) drops recall to 0.4092 because user requirements use high-level terms rather than code identifiers. Conversely, on iTrust, using semantic embedding retrieval alone (Dense Only) drops Hit@10 to 64.8\% (compared to 74.3\% for hybrid search) because domain-specific medical terms need exact keyword matching. Combining both with Reciprocal Rank Fusion (RRF) resolves both issues and outperforms either single-channel method across all benchmarks.
+
+\begin{table}[H]
+\centering
+\caption{Component Ablation Study ($k=10$)}
+\label{tab:ablation}
+\footnotesize
+\setlength{\tabcolsep}{3.2pt}
+\renewcommand{\arraystretch}{1.05}
+\begin{tabular}{@{}llcccc@{}}
+\toprule
+\textbf{Dataset} & \textbf{Configuration} & \textbf{Hit} & \textbf{Recall} & \textbf{MRR} & \textbf{nDCG} \\
+\midrule
+iTrust & Full Pipeline & \textbf{74.3\%} & \textbf{0.4834} & 0.4977 & 0.3924 \\
+ & No Cross-Encoder & 74.3\% & 0.4823 & \textbf{0.5073} & \textbf{0.4090} \\
+ & No BM25 & 69.5\% & 0.4316 & 0.4349 & 0.3484 \\
+ & BM25 Only & 70.5\% & 0.4564 & 0.4257 & 0.3539 \\
+ & Dense Only & 64.8\% & 0.3773 & 0.3719 & 0.3002 \\
+\midrule
+eTour & Full Pipeline & 87.7\% & 0.5026 & 0.6489 & 0.4703 \\
+ & No Cross-Encoder & \textbf{89.5\%} & 0.5181 & \textbf{0.6745} & 0.4871 \\
+ & No BM25 & 87.7\% & \textbf{0.5452} & 0.6464 & 0.5005 \\
+ & BM25 Only & 87.7\% & 0.4092 & 0.5235 & 0.3654 \\
+ & Dense Only & 87.7\% & 0.5332 & 0.6658 & \textbf{0.5036} \\
+\midrule
+LibEST & Full Pipeline & \textbf{100.0\%} & 0.9649 & 0.8617 & 0.8483 \\
+ & No Cross-Encoder & \textbf{100.0\%} & \textbf{0.9804} & \textbf{0.8794} & \textbf{0.8657} \\
+ & No BM25 & \textbf{100.0\%} & 0.9200 & 0.8652 & 0.8307 \\
+ & BM25 Only & \textbf{100.0\%} & 0.8101 & 0.8351 & 0.7432 \\
+ & Dense Only & \textbf{100.0\%} & 0.9367 & 0.8652 & 0.8172 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The ablation results show a clear trade-off between speed and reranking depth. On LibEST and eTour, requirements often mention exact file or function names. In these cases, pure rank fusion without the cross-encoder achieves higher MRR (0.8794 on LibEST, 0.6745 on eTour) because it puts exact name matches directly at the top. The cross-encoder was trained on general web text rather than source code, so it can sometimes nudge an exact code match down based on general wording. On iTrust, however, requirements describe broader workflows distributed across multiple classes that do not share direct keyword overlap. Here, the full pipeline gives the highest recall (0.4834) because deep cross-attention catches conceptual connections that keywords miss. In terms of runtime, pure rank fusion indexes an entire repository in only 3 to 11 seconds, compared to 85 to 141 seconds with cross-encoder reranking. This makes pure rank fusion well suited for fast CI/CD scans, while the cross-encoder is valuable when developers need deeper candidate inspection on complex workflows.
+
+\subsection{RAG Trace Explanation Quality}
+
+To assess whether generated trace explanations are technically grounded and useful for developers, explanations produced by Gemini 2.5 Flash were audited across $N=30$ verified links per benchmark (Table~\ref{tab:explanation_eval}). Grounding the generative prompt on top-ranked AST code chunks ensures high fidelity, achieving an average code faithfulness of 98.1\% and a low entity hallucination rate of 4.4\% (0.0\% on iTrust and LibEST, 13.3\% on eTour). Explanations received high factuality (4.93/5.0) and developer utility (4.96/5.0) ratings, while maintaining an average length of 29.8 words, confirming that explanations remain concise and readable for developers.
+
+\begin{table}[H]
+\centering
+\caption{RAG Trace Explanation Quality ($N=30$ per benchmark)}
+\label{tab:explanation_eval}
+\small
+\renewcommand{\arraystretch}{1.05}
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+\textbf{Metric} & \textbf{iTrust} & \textbf{eTour} & \textbf{LibEST} & \textbf{Mean} \\
+\midrule
+Code Faithfulness (\%) & 100.0\% & 94.4\% & 100.0\% & 98.1\% \\
+Entity Hallucination (\%) & 0.0\% & 13.3\% & 0.0\% & 4.4\% \\
+Factuality (1-5) & 5.00 & 4.80 & 5.00 & 4.93 \\
+Developer Utility (1-5) & 5.00 & 4.87 & 5.00 & 4.96 \\
+Mean Word Count & 28.0 & 27.5 & 33.9 & 29.8 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Requirement-Type Analysis}
+
+To analyze retrieval performance across functional granularities, requirements in the iTrust benchmark were grouped by use-case type and evaluated using Hit@10 (Table~\ref{tab:reqtype}).
+
+\begin{table}[H]
+\centering
+\caption{Hit@10 by Requirement Type (iTrust Benchmark)}
+\label{tab:reqtype}
+\small
+\renewcommand{\arraystretch}{1.1}
+\begin{tabular}{@{}lccc@{}}
+\toprule
+\textbf{Requirement Type} & \textbf{Count} & \textbf{Hits} & \textbf{Hit@10} \\
+\midrule
+Base use case & 7 & 7 & 100.0\% \\
+Scenario / Sub-flow & 71 & 63 & 88.7\% \\
+Exception flow & 27 & 8 & 29.6\% \\
+\midrule
+\textbf{Total} & \textbf{105} & \textbf{78} & \textbf{74.3\%} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The framework achieves perfect retrieval for base use cases (100\%) and consistently strong results for scenario requirements (88.7\%). In contrast, exception-flow requirements achieve a Hit@10 of 29.6\%. Exception-flow requirements typically describe validation failures, authorization checks, or error handling that is distributed across shared filter interceptors, base forms, and utility helpers rather than encapsulated within a single domain class. Isolated queries such as \textit{``If the date is invalid, display an error message''} lack domain vocabulary, causing IR models to retrieve generic utility classes. Context expansion, where the parent use-case title is prepended to the exception query (for example, \textit{``Document Office Visit: If the date is invalid...''}), injects necessary domain context to help distinguish feature-specific validation from generic helpers. For exception flows where validation logic is decoupled into external framework filters, static call-graph analysis can follow validator invocations back to the controller, and negative unit-test traces can directly link error assertions to the implementing classes.
+
+\subsection{Scalability Analysis}
+
+The scalability of the proposed framework was evaluated using repositories of increasing size. Fig.~\ref{fig:scalability} compares requirement embedding, code embedding, and trace-link generation time across the evaluated scales.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\linewidth]{figs/fig_scalability.png}
+\caption{Scalability analysis across different repository sizes.}
+\label{fig:scalability}
+\end{figure}
+
+Requirement embedding remains relatively stable across all dataset sizes because requirements are embedded only once. Code embedding constitutes the dominant preprocessing cost and increases approximately linearly with repository size. In contrast, trace-link retrieval runs locally with sub-second latency even for the full repository without external API calls, while natural-language explanations execute asynchronously. For large codebases, incremental indexing re-embeds only modified files on commits, avoiding full repository reprocessing.
+
+\section{Threats to Validity}
+
+\textbf{Internal validity.} A potential threat to internal validity is the choice of hyperparameters, including the fusion constant ($k_{rrf}=60$), reranking weight ($\alpha=0.4$), and retrieval depth ($k=10$). To prevent cherry-picking or overfitting, these values were kept fixed across all three benchmarks rather than tuned for individual repositories.
+
+\textbf{Model sensitivity.} The observed performance depends on the chosen embedding and reranking models. While general-purpose models like BGE and MiniLM performed reliably here, fine-tuning encoders specifically on source code could yield different precision-recall trade-offs.
+
+\section{Conclusion}
+
+This paper presented \textit{TraceAI}, a hybrid retrieval framework for automated requirement-to-code traceability that combines BM25 lexical retrieval, dense semantic retrieval, Reciprocal Rank Fusion (RRF), cross-encoder reranking, and AST-based code segmentation. The proposed framework generates interpretable requirement-to-file trace links by integrating hybrid retrieval with Retrieval-Augmented Generation (RAG) for natural-language explanations. Experimental evaluation across three software engineering benchmarks (iTrust, eTour, LibEST) spanning Java and C demonstrates that the framework achieves effective retrieval performance, with an average Hit@10 of 87.3\%, Recall@10 of 65.03\%, and MRR of 0.6694. Component ablation confirms the strong complementarity of lexical and semantic representations while highlighting rank fusion as an efficient baseline (taking 3 to 11 seconds) for repository-wide scanning. Furthermore, an empirical evaluation of generated explanations verified 98.1\% code faithfulness and low hallucination (4.4\%).
+
+\begin{thebibliography}{19}
+
+\bibitem{ref1}
+J. Zhang, J. Zhou, N. Niu, J. Hua, and C. Liu, ``Synergistic Enhancement of Requirement-to-Code Traceability: A Framework Combining Large Language Model Based Data Augmentation and an Advanced Encoder,'' \textit{Information and Software Technology}, 2025.
+
+\bibitem{ref2}
+C. Ge, T. Wang, X. Yang, and C. Treude, ``Cross-Level Requirements Tracing Based on Large Language Models,'' \textit{IEEE Transactions on Software Engineering}, 2025.
+
+\bibitem{ref3}
+S. B. A. Rizvi, ``A Systematic Mapping Study on the Use of LLMs for Requirements Traceability Link Recovery,'' Master's thesis, Tampere University, 2025.
+
+\bibitem{ref4}
+A. Vogelsang, A. Korn, G. Broccia, A. Ferrari, J. Fischbach, and C. Arora, ``On the Impact of Requirements Smells in Prompts: The Case of Automated Traceability,'' in \textit{Proc. IEEE/ACM ICSE-NIER}, 2025.
+
+\bibitem{ref5}
+B. Wang, W. Zou, H. Li, Y. Deng, and X. Li, ``An Empirical Study on the State-of-the-Art Methods for Requirement-to-Code Traceability Link Recovery,'' \textit{Journal of King Saud University - Computer and Information Sciences}, 2024.
+
+\bibitem{ref6}
+J. Hassine, ``An LLM-Based Approach to Recover Traceability Links Between Security Requirements and Goal Models,'' in \textit{Proc. ACM EASE}, 2024.
+
+\bibitem{ref7}
+D. Fuch\ss, S. Schwedt, J. Keim, and T. Hey, ``Beyond Retrieval: A Study of Using LLM Ensembles for Candidate Filtering in Requirements Traceability,'' in \textit{Proc. IEEE REW}, 2025.
+
+\bibitem{ref8}
+D. Fuch\ss, T. Hey, J. Keim, H. Liu, N. Ewald, T. Thirolf, and A. Koziolek, ``LiSSA: Toward Generic Traceability Link Recovery Through Retrieval-Augmented Generation,'' in \textit{Proc. IEEE/ACM ICSE}, 2025.
+
+\bibitem{ref9}
+Y. Tao, Y. Li, Y. Qin, and Y. Liu, ``Retrieval-Augmented Code Generation: A Survey with Focus on Repository-Level Approaches,'' \textit{arXiv preprint}, 2025.
+
+\bibitem{ref10}
+Y. Zhang, X. Zhao, Z. Z. Wang, C. Yang, J. Wei, and T. Wu, ``cAST: Enhancing Code Retrieval-Augmented Generation with Structural Chunking via Abstract Syntax Tree,'' in \textit{Findings of EMNLP}, 2025.
+
+\bibitem{ref11}
+S. Zhang, Y. Ding, S. Lian, S. Song, and H. Li, ``CodeRAG: Finding Relevant and Necessary Knowledge for Retrieval-Augmented Repository-Level Code Completion,'' in \textit{Proc. EMNLP}, 2025.
+
+\bibitem{ref12}
+I. Utkin, E. Spirin, E. Bogomolov, and T. Bryksin, ``Evaluating the Impact of Source Code Parsers on ML4SE Models,'' \textit{arXiv preprint}, 2022.
+
+\bibitem{ref13}
+S. Robertson and H. Zaragoza, ``The Probabilistic Relevance Framework: BM25 and Beyond,'' \textit{Foundations and Trends in Information Retrieval}, vol. 3, no. 4, pp. 333--389, 2009.
+
+\bibitem{ref14}
+G. V. Cormack, C. L. A. Clarke, and S. Buettcher, ``Reciprocal Rank Fusion Outperforms Condorcet and Individual Rank Learning Methods,'' in \textit{Proc. SIGIR}, 2009.
+
+\bibitem{ref15}
+R. Nogueira and K. Cho, ``Passage Re-ranking with BERT,'' \textit{arXiv preprint}, 2019.
+
+\bibitem{ref16}
+Z. Feng, D. Guo, D. Tang, \textit{et al.}, ``CodeBERT: A Pre-trained Model for Programming and Natural Languages,'' in \textit{Findings of EMNLP}, 2020.
+
+\bibitem{ref17}
+D. Guo, S. Ren, S. Lu, \textit{et al.}, ``GraphCodeBERT: Pre-training Code Representations with Data Flow,'' in \textit{Proc. ICLR}, 2021.
+
+\bibitem{ref18}
+N. Reimers and I. Gurevych, ``Sentence-BERT: Sentence Embeddings Using Siamese BERT-Networks,'' in \textit{Proc. EMNLP-IJCNLP}, 2019.
+
+\bibitem{ref19}
+Y. Wang, K. Hall, and J. Ni, ``Practical Code RAG at Scale: Task-Aware Retrieval Design for Repository-Level Code Intelligence,'' 2025.
+\end{thebibliography}
+
+\end{document}

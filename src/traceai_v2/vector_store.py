@@ -16,7 +16,7 @@ class VectorCollections:
 
 class VectorStore:
     def __init__(self, url: str, collections: VectorCollections):
-        self.client = QdrantClient(url=url)
+        self.client = QdrantClient(url=url, check_compatibility=False)
         self.collections = collections
 
     def ensure_collections(self) -> None:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 import tempfile
 from contextlib import asynccontextmanager
@@ -25,6 +26,7 @@ from .persistence import (
     sync_changed_files,
     clear_project_trace_links,
 )
+from .csv_utils import configure_csv_field_limit
 from .github_integration import GitHubRepoManager
 from .repo_ingestion import LocalRepoIngestionPipeline, RepoIngestionError
 from .requirements_ingestion import IngestionError, RequirementsIngestionPipeline
@@ -46,6 +48,7 @@ vector_store = VectorStore(
 requirements_pipeline = RequirementsIngestionPipeline(settings.data_root)
 repo_pipeline = LocalRepoIngestionPipeline(settings.data_root)
 
+logger = logging.getLogger("traceai_v2.api")
 startup_error: Optional[str] = None
 
 
@@ -58,6 +61,7 @@ async def lifespan(app: FastAPI):
         startup_error = None
     except Exception as exc:
         startup_error = str(exc)
+        logger.exception("Failed to initialize startup dependencies: %s", exc)
     yield
 
 

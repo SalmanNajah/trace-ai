@@ -61,35 +61,39 @@ def generate_batch_explanations(batch_items: list[dict]) -> list[str]:
         "Example format: {\"0\": \"This method validates the user login credentials as specified in UC10.\"}"
     )
 
-    try:
-        from google.genai import types
-        model_name = os.environ.get("TRACEAI_EXPLAINER_MODEL", "gemini-2.5-flash")
-        response = client.models.generate_content(
-            model=model_name,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                temperature=0.2
+    from google.genai import types
+    import time
+    model_name = os.environ.get("TRACEAI_EXPLAINER_MODEL", "gemini-2.5-flash")
+    for attempt in range(1, 4):
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    temperature=0.2
+                )
             )
-        )
-        
-        if response and response.text:
-            text = response.text.strip()
-            if text.startswith("```"):
-                lines = text.splitlines()
-                if lines[0].startswith("```"):
-                    lines = lines[1:]
-                if lines and lines[-1].startswith("```"):
-                    lines = lines[:-1]
-                text = "\n".join(lines).strip()
             
-            data = json.loads(text)
-            results = []
-            for item in batch_items:
-                id_str = str(item["id"])
-                results.append(data.get(id_str, "").strip())
-            return results
-    except Exception as exc:
-        logger.warning("Failed to generate batch explanations from Gemini: %s", exc)
-        
+            if response and response.text:
+                text = response.text.strip()
+                if text.startswith("```"):
+                    lines = text.splitlines()
+                    if lines[0].startswith("```"):
+                        lines = lines[1:]
+                    if lines and lines[-1].startswith("```"):
+                        lines = lines[:-1]
+                    text = "\n".join(lines).strip()
+                
+                data = json.loads(text)
+                results = []
+                for item in batch_items:
+                    id_str = str(item["id"])
+                    results.append(data.get(id_str, "").strip())
+                return results
+        except Exception as exc:
+            logger.warning("Attempt %d failed to generate batch explanations from Gemini: %s", attempt, exc)
+            if attempt < 3:
+                time.sleep(attempt * 2)
+            
     return [""] * len(batch_items)
